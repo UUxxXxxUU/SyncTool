@@ -10,6 +10,9 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QColor>
+#include <QMenu>
+#include <QSystemTrayIcon>
+#include <QStyle>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
@@ -87,12 +90,99 @@ MainWindow::MainWindow(QWidget *parent)
     QTimer::singleShot(300, this, [this]() {
         startOperations(m_autoSyncCheck->isChecked());
     });
+
+    // ===== 系统托盘 =====
+    m_trayIcon = new QSystemTrayIcon(this);
+    m_trayIcon->setIcon(style()->standardIcon(QStyle::SP_ComputerIcon));
+    m_trayIcon->setToolTip("远程 Release 同步工具");
+
+    m_trayMenu = new QMenu(this);
+    m_showAction = m_trayMenu->addAction("显示主窗口");
+    connect(m_showAction, &QAction::triggered, this, [this]() {
+        showNormal();
+        activateWindow();
+        raise();
+    });
+    m_trayMenu->addSeparator();
+    m_exitAction = m_trayMenu->addAction("退出");
+    connect(m_exitAction, &QAction::triggered, this, &MainWindow::realExit);
+
+    m_trayIcon->setContextMenu(m_trayMenu);
+    connect(m_trayIcon, &QSystemTrayIcon::activated, this, &MainWindow::trayIconActivated);
+
+    m_trayIcon->show();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    // 点击关闭按钮默认行为：隐藏到任务栏托盘
+    hide();
+    m_trayIcon->showMessage("远程 Release 同步工具",
+                             "程序已最小化到任务栏托盘，右键托盘图标可退出程序。",
+                             QSystemTrayIcon::Information,
+                             3000);
+    event->ignore();
+}
+
+void MainWindow::trayIconActivated(QSystemTrayIcon::ActivationReason reason)
+{
+    if (reason == QSystemTrayIcon::DoubleClick) {
+        showNormal();
+        activateWindow();
+        raise();
+    }
+}
+
+void MainWindow::realExit()
+{
+    m_isClosing = true;
+
+    // 1. 停止定时器，防止关闭过程中触发新的检测
+    if (m_pollTimer != nullptr) {
+        m_pollTimer->stop();
+    }
+
+    // 2. 取消所有正在运行的工作线程
+    if (hasRunningWorkers()) {
+        statusBar()->showMessage("正在停止后台任务...");
+
+        // 通知所有 worker 取消操作
+        for (auto it = m_runningWorkers.constBegin(); it != m_runningWorkers.constEnd(); ++it) {
+            SyncWorker *worker = it.value();
+            if (worker != nullptr) {
+                worker->cancel();
+            }
+        }
+
+        // 3. 等待线程结束（最多等待 5 秒）
+        for (auto it = m_runningThreads.constBegin(); it != m_runningThreads.constEnd(); ++it) {
+            QThread *thread = it.value();
+            thread->quit();
+            if (!thread->wait(5000)) {
+                // 超时则强制终止
+                thread->terminate();
+                thread->wait(2000);
+            }
+        }
+
+        m_runningThreads.clear();
+        m_runningWorkers.clear();
+    }
+
+    // 4. 清除待处理的同步标记
+    m_pendingSyncAfterCurrentRun = false;
+    m_pendingSyncStatusMessage.clear();
+
+    // 5. 保存配置
     saveConfiguration();
-    QMainWindow::closeEvent(event);
+
+    // 6. 隐藏托盘图标
+    if (m_trayIcon != nullptr) {
+        m_trayIcon->hide();
+    }
+
+    // 7. 真正退出
+    QApplication::quit();
 }
 
 void MainWindow::setupUi()
@@ -605,7 +695,7 @@ void MainWindow::handleWorkerFinished(const QString &hostId)
 
 void MainWindow::pollForChanges()
 {
-    if (hasRunningWorkers()) {
+    if (m_isClosing || hasRunningWorkers()) {
         return;
     }
 
@@ -778,6 +868,10 @@ QVector<int> MainWindow::targetRows() const
 
 void MainWindow::startOperations(bool performCopy)
 {
+    if (m_isClosing) {
+        return;
+    }
+
     collectUiToConfig();
     const QVector<int> rows = targetRows();
     if (rows.isEmpty()) {
@@ -814,6 +908,7 @@ void MainWindow::startOperations(bool performCopy)
         connect(thread, &QThread::finished, thread, &QObject::deleteLater);
         connect(thread, &QThread::finished, this, [this, host]() {
             m_runningThreads.remove(host.id);
+            m_runningWorkers.remove(host.id);
             if (!hasRunningWorkers()) {
                 if (m_pendingSyncAfterCurrentRun) {
                     m_pendingSyncAfterCurrentRun = false;
@@ -831,6 +926,7 @@ void MainWindow::startOperations(bool performCopy)
         });
 
         m_runningThreads.insert(host.id, thread);
+        m_runningWorkers.insert(host.id, worker);
         updateHostRow(row, performCopy ? SyncWorker::Syncing : SyncWorker::Checking, 0,
                       performCopy ? "同步中" : "检查中",
                       performCopy ? "准备同步..." : "准备检查...",
