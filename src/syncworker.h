@@ -2,6 +2,7 @@
 
 #include "appconfig.h"
 
+#include <atomic>
 #include <QObject>
 #include <QStringList>
 
@@ -44,9 +45,11 @@ public:
 
     SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes, bool performCopy, QObject *parent = nullptr);
     void emitProgress(int percent, const QString &detail);
+    bool isCancelled() const;
 
 public slots:
     void process();
+    void cancel();
 
 signals:
     void progressChanged(const QString &hostId, int percent, const QString &detail);
@@ -74,4 +77,5 @@ private:
     QString m_releaseDir;
     QStringList m_fileTypes;
     bool m_performCopy = false;
+    std::atomic<bool> m_cancelled;
 };

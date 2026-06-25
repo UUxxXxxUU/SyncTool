@@ -5,13 +5,16 @@
 #include <QColor>
 #include <QHash>
 #include <QMainWindow>
+#include <QSystemTrayIcon>
 
 QT_BEGIN_NAMESPACE
+class QAction;
 class QCheckBox;
 class QCloseEvent;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
+class QMenu;
 class QProgressBar;
 class QSpinBox;
 class QTableWidget;
@@ -19,6 +22,8 @@ class QTableWidgetItem;
 class QThread;
 class QTimer;
 QT_END_NAMESPACE
+
+class SyncWorker;
 
 class MainWindow : public QMainWindow
 {
@@ -52,6 +57,8 @@ private slots:
                            const QString &detailTooltip);
     void handleWorkerFinished(const QString &hostId);
     void pollForChanges();
+    void trayIconActivated(QSystemTrayIcon::ActivationReason reason);
+    void realExit();
 
 private:
     struct RowWidgets
@@ -86,6 +93,7 @@ private:
     QString m_lastFingerprint;
     bool m_isRefreshingTable = false;
     bool m_pendingSyncAfterCurrentRun = false;
+    bool m_isClosing = false;
     QString m_pendingSyncStatusMessage;
 
     QLineEdit *m_releaseDirEdit = nullptr;
@@ -105,4 +113,10 @@ private:
 
     QHash<QString, RowWidgets> m_rowWidgets;
     QHash<QString, QThread *> m_runningThreads;
+    QHash<QString, SyncWorker *> m_runningWorkers;
+
+    QSystemTrayIcon *m_trayIcon = nullptr;
+    QMenu *m_trayMenu = nullptr;
+    QAction *m_showAction = nullptr;
+    QAction *m_exitAction = nullptr;
 };
