@@ -467,6 +467,14 @@ bool runRobocopy(SyncWorker *worker,
     worker->emitProgress(pulsePercent, QString("robocopy 同步中，%1 线程").arg(threadCount));
 
     while (!process.waitForFinished(1000)) {
+        if (worker->isCancelled()) {
+            process.kill();
+            process.waitForFinished(3000);
+            if (error != nullptr) {
+                *error = QString("同步已被用户取消");
+            }
+            return false;
+        }
         elapsedSeconds++;
         pulsePercent = qMin(95, pulsePercent + 1);
         worker->emitProgress(pulsePercent,
@@ -556,7 +564,18 @@ SyncWorker::SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes
     , m_releaseDir(releaseDir)
     , m_fileTypes(fileTypes)
     , m_performCopy(performCopy)
+    , m_cancelled(false)
 {
+}
+
+void SyncWorker::cancel()
+{
+    m_cancelled = true;
+}
+
+bool SyncWorker::isCancelled() const
+{
+    return m_cancelled;
 }
 
 void SyncWorker::emitProgress(int percent, const QString &detail)
@@ -638,12 +657,22 @@ void SyncWorker::process()
     return;
 #endif
 
+    if (m_cancelled) {
+        finishWithError(Error, "已取消", QString("%1：操作已被用户取消").arg(displayName));
+        return;
+    }
+
     if (!QFileInfo::exists(remoteRoot)) {
         const QDir dir;
         if (!dir.mkpath(remoteRoot)) {
             finishWithError(Disconnected, "断线", QString("%1：共享路径不可达").arg(displayName));
             return;
         }
+    }
+
+    if (m_cancelled) {
+        finishWithError(Error, "已取消", QString("%1：操作已被用户取消").arg(displayName));
+        return;
     }
 
     const QHash<QString, LocalFile> localFiles = collectLocalFiles(localRoot, typeSet);
@@ -673,6 +702,11 @@ void SyncWorker::process()
                   syncDetailText(summary),
                   detailTooltipText(summary, summary.extraCount > 0));
         emitFinished();
+        return;
+    }
+
+    if (m_cancelled) {
+        finishWithError(Error, "已取消", QString("%1：同步已被用户取消").arg(displayName));
         return;
     }
 

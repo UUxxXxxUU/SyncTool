@@ -8,6 +8,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     app.setApplicationName("RemoteReleaseSync");
     app.setOrganizationName("LocalTools");
+    app.setQuitOnLastWindowClosed(false);
 
     QFont font;
     font.setPointSize(10);
