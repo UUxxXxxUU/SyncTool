@@ -87,13 +87,17 @@ QString hostDisplayName(const HostEntry &host)
     return host.sharePath;
 }
 
-QHash<QString, SyncWorker::LocalFile> collectLocalFiles(const QString &rootPath, const QSet<QString> &types)
+QHash<QString, SyncWorker::LocalFile> collectLocalFiles(const QString &rootPath, const QSet<QString> &types, const SyncWorker *worker)
 {
     QHash<QString, SyncWorker::LocalFile> files;
     QDirIterator iterator(rootPath, QDir::Files, QDirIterator::Subdirectories);
     const QDir baseDir(rootPath);
 
     while (iterator.hasNext()) {
+        if (worker != nullptr && worker->isCancelled()) {
+            break;
+        }
+
         iterator.next();
         const QFileInfo info = iterator.fileInfo();
         if (!types.contains(info.suffix().toLower())) {
@@ -111,13 +115,17 @@ QHash<QString, SyncWorker::LocalFile> collectLocalFiles(const QString &rootPath,
     return files;
 }
 
-QHash<QString, RemoteFile> collectRemoteFiles(const QString &rootPath, const QSet<QString> &types)
+QHash<QString, RemoteFile> collectRemoteFiles(const QString &rootPath, const QSet<QString> &types, const SyncWorker *worker)
 {
     QHash<QString, RemoteFile> files;
     QDirIterator iterator(rootPath, QDir::Files, QDirIterator::Subdirectories);
     const QDir baseDir(rootPath);
 
     while (iterator.hasNext()) {
+        if (worker != nullptr && worker->isCancelled()) {
+            break;
+        }
+
         iterator.next();
         const QFileInfo info = iterator.fileInfo();
         if (!types.contains(info.suffix().toLower())) {
@@ -675,8 +683,17 @@ void SyncWorker::process()
         return;
     }
 
-    const QHash<QString, LocalFile> localFiles = collectLocalFiles(localRoot, typeSet);
-    const QHash<QString, RemoteFile> remoteFiles = collectRemoteFiles(remoteRoot, typeSet);
+    const QHash<QString, LocalFile> localFiles = collectLocalFiles(localRoot, typeSet, this);
+    if (m_cancelled) {
+        finishWithError(Error, "已取消", QString("%1：操作已被用户取消").arg(displayName));
+        return;
+    }
+
+    const QHash<QString, RemoteFile> remoteFiles = collectRemoteFiles(remoteRoot, typeSet, this);
+    if (m_cancelled) {
+        finishWithError(Error, "已取消", QString("%1：操作已被用户取消").arg(displayName));
+        return;
+    }
 
     QVector<PendingCopy> pendingCopies;
     ComparisonSummary summary = compareFiles(localFiles, remoteFiles, m_performCopy ? &pendingCopies : nullptr, remoteRoot);

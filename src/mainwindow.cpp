@@ -8,9 +8,14 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QCloseEvent>
 #include <QColor>
+#include <QComboBox>
+#include <QCoreApplication>
 #include <QMenu>
+#include <QModelIndex>
+#include <QSettings>
 #include <QSystemTrayIcon>
 #include <QStyle>
 #include <QCryptographicHash>
@@ -27,6 +32,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QProcess>
+#include <QPoint>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSet>
@@ -59,6 +65,19 @@ QString defaultHostNameFromPath(const QString &path)
     return parts.isEmpty() ? path : parts.first();
 }
 
+QString hostNameFromSharePath(const QString &path)
+{
+    const QString native = QDir::toNativeSeparators(path.trimmed());
+    if (native.startsWith("\\\\")) {
+        const QStringList parts = native.mid(2).split('\\', QString::SkipEmptyParts);
+        if (!parts.isEmpty()) {
+            return parts.first();
+        }
+    }
+
+    return defaultHostNameFromPath(path);
+}
+
 QString hostDisplayText(const HostEntry &host)
 {
     if (!host.name.trimmed().isEmpty()) {
@@ -70,7 +89,22 @@ QString hostDisplayText(const HostEntry &host)
 
 QString sharePathTooltip(const QString &sharePath)
 {
-    return QString("Ctrl+左键打开共享目录\n%1").arg(sharePath);
+    return QString("Ctrl+点击打开共享目录；双击复制主机名\n%1").arg(sharePath);
+}
+
+static const int kMaxReleaseDirHistory = 20;
+#ifdef Q_OS_WIN
+static const char *kAutoStartRunKey = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+static const char *kAutoStartValueName = "RemoteReleaseSync";
+#endif
+
+QString startupCommand()
+{
+#ifdef Q_OS_WIN
+    return QString("\"%1\" --startup").arg(QDir::toNativeSeparators(QCoreApplication::applicationFilePath()));
+#else
+    return QString();
+#endif
 }
 }
 
@@ -97,7 +131,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_trayIcon->setToolTip("远程 Release 同步工具");
 
     m_trayMenu = new QMenu(this);
-    m_showAction = m_trayMenu->addAction("显示主窗口");
+    m_showAction = m_trayMenu->addAction("显示主界面");
     connect(m_showAction, &QAction::triggered, this, [this]() {
         showNormal();
         activateWindow();
@@ -113,12 +147,32 @@ MainWindow::MainWindow(QWidget *parent)
     m_trayIcon->show();
 }
 
+MainWindow::~MainWindow()
+{
+    m_isClosing = true;
+    requestWorkersToStop();
+
+    for (auto it = m_runningThreads.constBegin(); it != m_runningThreads.constEnd(); ++it) {
+        QThread *thread = it.value();
+        if (thread != nullptr && thread->isRunning()) {
+            thread->quit();
+            thread->wait();
+        }
+    }
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    // 点击关闭按钮默认行为：隐藏到任务栏托盘
+    if ((QApplication::keyboardModifiers() & Qt::ControlModifier) != 0) {
+        event->ignore();
+        realExit();
+        return;
+    }
+
+    // 点击关闭按钮默认为隐藏到托盘
     hide();
     m_trayIcon->showMessage("远程 Release 同步工具",
-                             "程序已最小化到任务栏托盘，右键托盘图标可退出程序。",
+                             "程序已最小化到系统托盘，右键点击图标可退出。",
                              QSystemTrayIcon::Information,
                              3000);
     event->ignore();
@@ -135,53 +189,79 @@ void MainWindow::trayIconActivated(QSystemTrayIcon::ActivationReason reason)
 
 void MainWindow::realExit()
 {
-    m_isClosing = true;
+    if (m_exitFinished) {
+        return;
+    }
 
-    // 1. 停止定时器，防止关闭过程中触发新的检测
+    m_isClosing = true;
+    setEnabled(false);
+
+    // 停止定时器，防止关闭过程中触发新的检查
     if (m_pollTimer != nullptr) {
         m_pollTimer->stop();
     }
 
-    // 2. 取消所有正在运行的工作线程
-    if (hasRunningWorkers()) {
-        statusBar()->showMessage("正在停止后台任务...");
-
-        // 通知所有 worker 取消操作
-        for (auto it = m_runningWorkers.constBegin(); it != m_runningWorkers.constEnd(); ++it) {
-            SyncWorker *worker = it.value();
-            if (worker != nullptr) {
-                worker->cancel();
-            }
-        }
-
-        // 3. 等待线程结束（最多等待 5 秒）
-        for (auto it = m_runningThreads.constBegin(); it != m_runningThreads.constEnd(); ++it) {
-            QThread *thread = it.value();
-            thread->quit();
-            if (!thread->wait(5000)) {
-                // 超时则强制终止
-                thread->terminate();
-                thread->wait(2000);
-            }
-        }
-
-        m_runningThreads.clear();
-        m_runningWorkers.clear();
-    }
-
-    // 4. 清除待处理的同步标记
     m_pendingSyncAfterCurrentRun = false;
     m_pendingSyncStatusMessage.clear();
 
-    // 5. 保存配置
+    if (m_exitAction != nullptr) {
+        m_exitAction->setEnabled(false);
+    }
+    if (m_showAction != nullptr) {
+        m_showAction->setEnabled(false);
+    }
+
+    // 取消所有进行中的工作线程，等线程自然结束后再退出
+    if (hasRunningWorkers()) {
+        statusBar()->showMessage("正在停止后台任务...");
+        if (m_trayIcon != nullptr) {
+            m_trayIcon->showMessage("远程 Release 同步工具",
+                                    "正在停止后台任务，完成后会自动退出。",
+                                    QSystemTrayIcon::Information,
+                                    3000);
+        }
+
+        requestWorkersToStop();
+        return;
+    }
+
+    finishExit();
+}
+
+void MainWindow::requestWorkersToStop()
+{
+    for (auto it = m_runningWorkers.constBegin(); it != m_runningWorkers.constEnd(); ++it) {
+        SyncWorker *worker = it.value();
+        if (worker != nullptr) {
+            worker->cancel();
+        }
+    }
+
+    for (auto it = m_runningThreads.constBegin(); it != m_runningThreads.constEnd(); ++it) {
+        QThread *thread = it.value();
+        if (thread != nullptr) {
+            thread->quit();
+        }
+    }
+}
+
+void MainWindow::finishExit()
+{
+    if (m_exitFinished) {
+        return;
+    }
+
+    m_exitFinished = true;
+
+    // 保存配置
     saveConfiguration();
 
-    // 6. 隐藏托盘图标
+    // 隐藏托盘图标
     if (m_trayIcon != nullptr) {
         m_trayIcon->hide();
     }
 
-    // 7. 真正退出
+    // 真正退出
     QApplication::quit();
 }
 
@@ -199,7 +279,11 @@ void MainWindow::setupUi()
 
     auto *dirLayout = new QHBoxLayout();
     auto *dirLabel = new QLabel("Release 目录：", localGroup);
-    m_releaseDirEdit = new QLineEdit(localGroup);
+    m_releaseDirEdit = new QComboBox(localGroup);
+    m_releaseDirEdit->setEditable(true);
+    m_releaseDirEdit->setInsertPolicy(QComboBox::NoInsert);
+    m_releaseDirEdit->setMinimumWidth(400);
+    m_releaseDirEdit->lineEdit()->setPlaceholderText("选择或输入本地 Release 目录路径...");
     auto *browseButton = new QPushButton("浏览...", localGroup);
     dirLayout->addWidget(dirLabel);
     dirLayout->addWidget(m_releaseDirEdit, 1);
@@ -214,7 +298,7 @@ void MainWindow::setupUi()
 
     auto *typeButtonColumn = new QVBoxLayout();
     m_newTypeEdit = new QLineEdit(localGroup);
-    m_newTypeEdit->setPlaceholderText("输入扩展名，如 dll");
+    m_newTypeEdit->setPlaceholderText("输入扩展名如 dll");
     auto *addTypeButton = new QPushButton("添加类型", localGroup);
     auto *removeTypeButton = new QPushButton("删除类型", localGroup);
     typeButtonColumn->addWidget(m_newTypeEdit);
@@ -229,14 +313,16 @@ void MainWindow::setupUi()
 
     auto *optionRow = new QHBoxLayout();
     m_autoSyncCheck = new QCheckBox("检测到本地文件变化后自动同步", localGroup);
+    m_startWithSystemCheck = new QCheckBox("开机自动启动", localGroup);
     m_intervalSpin = new QSpinBox(localGroup);
     m_intervalSpin->setRange(1, 3600);
     m_intervalSpin->setSuffix(" 秒");
     auto *saveConfigButton = new QPushButton("保存配置", localGroup);
     auto *refreshButton = new QPushButton("刷新状态", localGroup);
-    auto *syncButton = new QPushButton("立即同步", localGroup);
+    auto *syncButton = new QPushButton("手动同步", localGroup);
     optionRow->addWidget(m_autoSyncCheck);
-    optionRow->addWidget(new QLabel("扫描间隔：", localGroup));
+    optionRow->addWidget(m_startWithSystemCheck);
+    optionRow->addWidget(new QLabel("扫描间隔", localGroup));
     optionRow->addWidget(m_intervalSpin);
     optionRow->addStretch();
     optionRow->addWidget(saveConfigButton);
@@ -244,16 +330,16 @@ void MainWindow::setupUi()
     optionRow->addWidget(syncButton);
     localLayout->addLayout(optionRow);
 
-    auto *hostEditorGroup = new QGroupBox("远程主机配置", central);
+    auto *hostEditorGroup = new QGroupBox("远程主机编辑", central);
     auto *hostEditorLayout = new QVBoxLayout(hostEditorGroup);
     auto *hostForm = new QFormLayout();
-    m_hostEnabledCheck = new QCheckBox("勾选后参与同步", hostEditorGroup);
+    m_hostEnabledCheck = new QCheckBox("勾选即启用同步", hostEditorGroup);
     m_hostNameEdit = new QLineEdit(hostEditorGroup);
     m_hostPathEdit = new QLineEdit(hostEditorGroup);
     m_hostUserEdit = new QLineEdit(hostEditorGroup);
     m_hostPasswordEdit = new QLineEdit(hostEditorGroup);
     m_hostPasswordEdit->setEchoMode(QLineEdit::Password);
-    m_hostNameEdit->setPlaceholderText("可选，留空时默认显示主机名");
+    m_hostNameEdit->setPlaceholderText("可选，不填时默认显示主机名");
     m_hostPathEdit->setPlaceholderText("\\\\DESKTOP-ECJ97U1\\share\\LHJ\\Release");
     m_hostUserEdit->setPlaceholderText("Administrator");
     m_hostPasswordEdit->setPlaceholderText("123");
@@ -265,10 +351,10 @@ void MainWindow::setupUi()
     hostEditorLayout->addLayout(hostForm);
 
     auto *hostButtonRow = new QHBoxLayout();
-    auto *addHostButton = new QPushButton("新增主机", hostEditorGroup);
+    auto *addHostButton = new QPushButton("添加主机", hostEditorGroup);
     auto *updateHostButton = new QPushButton("更新选中主机", hostEditorGroup);
     auto *removeHostButton = new QPushButton("删除选中主机", hostEditorGroup);
-    auto *clearEditorButton = new QPushButton("清空输入框", hostEditorGroup);
+    auto *clearEditorButton = new QPushButton("清空编辑", hostEditorGroup);
     hostButtonRow->addWidget(addHostButton);
     hostButtonRow->addWidget(updateHostButton);
     hostButtonRow->addWidget(removeHostButton);
@@ -282,7 +368,7 @@ void MainWindow::setupUi()
     m_hostTable->setColumnCount(7);
     m_hostTable->setHorizontalHeaderLabels(QStringList()
                                            << "启用"
-                                           << "主机"
+                                           << "名称"
                                            << "共享目录"
                                            << "账号"
                                            << "进度"
@@ -299,6 +385,7 @@ void MainWindow::setupUi()
     m_hostTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_hostTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_hostTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_hostTable->setContextMenuPolicy(Qt::CustomContextMenu);
     tableLayout->addWidget(m_hostTable);
 
     rootLayout->addWidget(localGroup);
@@ -320,6 +407,8 @@ void MainWindow::setupUi()
     connect(clearEditorButton, &QPushButton::clicked, this, &MainWindow::clearHostEditor);
     connect(m_hostTable, &QTableWidget::itemChanged, this, &MainWindow::handleHostTableItemChanged);
     connect(m_hostTable, &QTableWidget::cellClicked, this, &MainWindow::handleHostTableCellClicked);
+    connect(m_hostTable, &QTableWidget::cellDoubleClicked, this, &MainWindow::handleHostTableCellDoubleClicked);
+    connect(m_hostTable, &QTableWidget::customContextMenuRequested, this, &MainWindow::showHostTableContextMenu);
     connect(m_hostTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::loadSelectedHostToEditor);
     connect(m_intervalSpin,
             static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged),
@@ -331,23 +420,91 @@ void MainWindow::setupUi()
     connect(m_autoSyncCheck, &QCheckBox::toggled, this, [this](bool) {
         saveConfiguration();
     });
-    connect(m_releaseDirEdit, &QLineEdit::editingFinished, this, [this]() {
-        m_lastFingerprint.clear();
+    connect(m_startWithSystemCheck, &QCheckBox::toggled, this, [this](bool) {
         saveConfiguration();
     });
+    connect(m_releaseDirEdit->lineEdit(), &QLineEdit::editingFinished, this, &MainWindow::onReleaseDirEditFinished);
+    connect(m_releaseDirEdit, QOverload<int>::of(&QComboBox::activated), this, &MainWindow::onReleaseDirEditFinished);
+}
+
+void MainWindow::onReleaseDirEditFinished()
+{
+    const QString path = m_releaseDirEdit->currentText().trimmed();
+    if (!path.isEmpty()) {
+        addToReleaseDirHistory(path);
+    }
+    m_lastFingerprint.clear();
+    saveConfiguration();
+}
+
+void MainWindow::addToReleaseDirHistory(const QString &path)
+{
+    const QString normalized = normalizePathForUi(path);
+    if (normalized.isEmpty()) {
+        return;
+    }
+
+    // 移除已存在的相同路径（稍后会添加到最前面）
+    m_config.releaseDirHistory.removeAll(normalized);
+
+    // 插入到最前面
+    m_config.releaseDirHistory.prepend(normalized);
+
+    // 限制历史记录数量
+    while (m_config.releaseDirHistory.size() > kMaxReleaseDirHistory) {
+        m_config.releaseDirHistory.removeLast();
+    }
+
+    // 更新下拉框
+    QSignalBlocker blocker(m_releaseDirEdit);
+    m_releaseDirEdit->clear();
+    for (const QString &item : m_config.releaseDirHistory) {
+        m_releaseDirEdit->addItem(item);
+    }
+    m_releaseDirEdit->setCurrentText(normalized);
 }
 
 void MainWindow::loadConfiguration()
 {
     m_config = ConfigManager::load(m_configPath);
+    const bool systemAutoStartEnabled = isSystemAutoStartEnabled();
+    if (m_config.startWithSystem && !systemAutoStartEnabled) {
+        QString error;
+        if (!setSystemAutoStartEnabled(true, &error)) {
+            m_config.startWithSystem = false;
+        }
+    } else if (!m_config.startWithSystem && systemAutoStartEnabled) {
+        m_config.startWithSystem = true;
+    }
     applyConfigToUi();
 }
 
 void MainWindow::applyConfigToUi()
 {
-    m_releaseDirEdit->setText(normalizePathForUi(m_config.releaseDir));
-    m_autoSyncCheck->setChecked(m_config.autoSync);
-    m_intervalSpin->setValue(qMax(1, m_config.scanIntervalSeconds));
+    // 先填充历史记录到下拉框
+    {
+        QSignalBlocker blocker(m_releaseDirEdit);
+        m_releaseDirEdit->clear();
+        for (const QString &item : m_config.releaseDirHistory) {
+            if (!item.trimmed().isEmpty()) {
+                m_releaseDirEdit->addItem(item);
+            }
+        }
+        m_releaseDirEdit->setCurrentText(normalizePathForUi(m_config.releaseDir));
+    }
+
+    {
+        QSignalBlocker blocker(m_autoSyncCheck);
+        m_autoSyncCheck->setChecked(m_config.autoSync);
+    }
+    {
+        QSignalBlocker blocker(m_startWithSystemCheck);
+        m_startWithSystemCheck->setChecked(m_config.startWithSystem);
+    }
+    {
+        QSignalBlocker blocker(m_intervalSpin);
+        m_intervalSpin->setValue(qMax(1, m_config.scanIntervalSeconds));
+    }
 
     if (m_config.fileTypes.isEmpty()) {
         m_config.fileTypes = QStringList() << "dll" << "exe" << "pdb";
@@ -364,8 +521,9 @@ void MainWindow::applyConfigToUi()
 
 void MainWindow::collectUiToConfig()
 {
-    m_config.releaseDir = normalizePathForUi(m_releaseDirEdit->text());
+    m_config.releaseDir = normalizePathForUi(m_releaseDirEdit->currentText());
     m_config.autoSync = m_autoSyncCheck->isChecked();
+    m_config.startWithSystem = m_startWithSystemCheck->isChecked();
     m_config.scanIntervalSeconds = m_intervalSpin->value();
 
     QStringList types;
@@ -420,7 +578,7 @@ void MainWindow::refreshHostTable()
         auto *nameItem = new QTableWidgetItem(host.name.trimmed().isEmpty() ? defaultHostNameFromPath(host.sharePath) : host.name.trimmed());
         auto *pathItem = new QTableWidgetItem(normalizePathForUi(host.sharePath));
         auto *userItem = new QTableWidgetItem(host.username);
-        auto *statusItem = new QTableWidgetItem("未检查");
+        auto *statusItem = new QTableWidgetItem("未检测");
         auto *detailItem = new QTableWidgetItem("等待状态刷新");
         pathItem->setToolTip(sharePathTooltip(pathItem->text()));
         m_hostTable->setItem(row, 1, nameItem);
@@ -439,7 +597,7 @@ void MainWindow::refreshHostTable()
         widgets.progressBar = progressBar;
         m_rowWidgets.insert(host.id, widgets);
 
-        updateHostRow(row, SyncWorker::Checking, 0, "未检查", "等待状态刷新", "等待状态刷新", 0);
+        updateHostRow(row, SyncWorker::Checking, 0, "未检测", "等待状态刷新", "等待状态刷新", 0);
     }
 
     m_isRefreshingTable = false;
@@ -447,12 +605,12 @@ void MainWindow::refreshHostTable()
 
 void MainWindow::browseReleaseDir()
 {
-    const QString dir = QFileDialog::getExistingDirectory(this, "选择本地 Release 目录", m_releaseDirEdit->text());
+    const QString dir = QFileDialog::getExistingDirectory(this, "选择本地 Release 目录", m_releaseDirEdit->currentText());
     if (dir.isEmpty()) {
         return;
     }
 
-    m_releaseDirEdit->setText(normalizePathForUi(dir));
+    addToReleaseDirHistory(dir);
     m_lastFingerprint.clear();
     saveConfiguration();
     requestAutoSync("本地目录已更新，开始自动同步");
@@ -462,7 +620,7 @@ void MainWindow::addOrUpdateHost(bool updateExisting)
 {
     const QString sharePath = normalizePathForUi(m_hostPathEdit->text());
     if (sharePath.isEmpty()) {
-        QMessageBox::warning(this, "提示", "请先输入共享目录。");
+        QMessageBox::warning(this, "提示", "请填写共享目录路径。");
         return;
     }
 
@@ -476,7 +634,7 @@ void MainWindow::addOrUpdateHost(bool updateExisting)
     const int row = m_hostTable->currentRow();
     if (updateExisting) {
         if (row < 0 || row >= m_config.hosts.size()) {
-            QMessageBox::warning(this, "提示", "请先在表格中选中一台主机。");
+            QMessageBox::warning(this, "提示", "请在表格中选择一台主机后再更新。");
             return;
         }
         host.id = m_config.hosts.at(row).id;
@@ -500,12 +658,12 @@ void MainWindow::removeSelectedHost()
 {
     const int row = m_hostTable->currentRow();
     if (row < 0 || row >= m_config.hosts.size()) {
-        QMessageBox::warning(this, "提示", "请先选中需要删除的主机。");
+        QMessageBox::warning(this, "提示", "请先选择需要删除的主机。");
         return;
     }
 
     if (m_runningThreads.contains(m_config.hosts.at(row).id)) {
-        QMessageBox::warning(this, "提示", "该主机正在执行任务，请稍后再删除。");
+        QMessageBox::warning(this, "提示", "该主机正在执行任务，请等待完成后再删除。");
         return;
     }
 
@@ -549,6 +707,10 @@ void MainWindow::saveConfiguration()
         QMessageBox::warning(this, "保存失败", QString("配置文件写入失败：%1").arg(error));
         return;
     }
+    if (!setSystemAutoStartEnabled(m_config.startWithSystem, &error)) {
+        QMessageBox::warning(this, "自启设置失败", QString("开机自启设置写入失败：%1").arg(error));
+        return;
+    }
 
     statusBar()->showMessage("配置已保存", 3000);
 }
@@ -558,7 +720,7 @@ void MainWindow::syncNow()
     m_lastFingerprint = currentLocalFingerprint();
     if (hasRunningWorkers()) {
         m_pendingSyncAfterCurrentRun = true;
-        statusBar()->showMessage("当前正在检查或同步，完成后将自动执行一次同步", 3000);
+        statusBar()->showMessage("当前正在检查/同步，完成后会自动执行一次同步", 3000);
         return;
     }
 
@@ -569,7 +731,7 @@ void MainWindow::addFileType()
 {
     const QString type = normalizedExtension(m_newTypeEdit->text());
     if (type.isEmpty()) {
-        QMessageBox::warning(this, "提示", "请输入有效的扩展名，例如 dll。");
+        QMessageBox::warning(this, "提示", "请输入有效的扩展名，如 dll。");
         return;
     }
 
@@ -593,7 +755,7 @@ void MainWindow::removeSelectedFileType()
 {
     QListWidgetItem *item = m_typeList->currentItem();
     if (item == nullptr) {
-        QMessageBox::warning(this, "提示", "请先选中一个扩展名。");
+        QMessageBox::warning(this, "提示", "请先选择一个扩展名。");
         return;
     }
 
@@ -648,6 +810,51 @@ void MainWindow::handleHostTableCellClicked(int row, int column)
     }
 
     statusBar()->showMessage(QString("已打开共享目录：%1").arg(sharePath), 3000);
+}
+
+void MainWindow::handleHostTableCellDoubleClicked(int row, int column)
+{
+    if (column != 1 && column != 2) {
+        return;
+    }
+
+    copyHostNameFromRow(row);
+}
+
+void MainWindow::showHostTableContextMenu(const QPoint &position)
+{
+    const QModelIndex index = m_hostTable->indexAt(position);
+    if (!index.isValid()) {
+        return;
+    }
+
+    const int row = index.row();
+    if (row < 0 || row >= m_config.hosts.size()) {
+        return;
+    }
+
+    QMenu menu(this);
+    QAction *copyHostNameAction = menu.addAction("复制主机名");
+    QAction *selectedAction = menu.exec(m_hostTable->viewport()->mapToGlobal(position));
+    if (selectedAction == copyHostNameAction) {
+        copyHostNameFromRow(row);
+    }
+}
+
+void MainWindow::copyHostNameFromRow(int row)
+{
+    if (row < 0 || row >= m_config.hosts.size()) {
+        return;
+    }
+
+    const QString hostName = hostNameFromSharePath(m_config.hosts.at(row).sharePath);
+    if (hostName.isEmpty()) {
+        statusBar()->showMessage("复制主机名失败：共享目录为空", 3000);
+        return;
+    }
+
+    QApplication::clipboard()->setText(hostName);
+    statusBar()->showMessage(QString("已复制主机名：%1").arg(hostName), 3000);
 }
 
 void MainWindow::handleWorkerProgress(const QString &hostId, int percent, const QString &detail)
@@ -782,7 +989,7 @@ QColor MainWindow::colorForState(int state, int mismatchPercent) const
 
 QString MainWindow::currentLocalFingerprint() const
 {
-    const QString rootPath = normalizePathForUi(m_releaseDirEdit->text());
+    const QString rootPath = normalizePathForUi(m_releaseDirEdit->currentText());
     if (rootPath.isEmpty() || !QFileInfo::exists(rootPath)) {
         return QString();
     }
@@ -845,7 +1052,7 @@ void MainWindow::requestAutoSync(const QString &statusMessage)
     if (hasRunningWorkers()) {
         m_pendingSyncAfterCurrentRun = true;
         m_pendingSyncStatusMessage = statusMessage;
-        statusBar()->showMessage(QString("%1，当前任务完成后继续执行").arg(statusMessage), 3000);
+        statusBar()->showMessage(QString("%1，当前任务完成后立即执行").arg(statusMessage), 3000);
         return;
     }
 
@@ -876,7 +1083,7 @@ void MainWindow::startOperations(bool performCopy)
     const QVector<int> rows = targetRows();
     if (rows.isEmpty()) {
         if (performCopy) {
-            statusBar()->showMessage("没有可同步的已勾选主机", 3000);
+            statusBar()->showMessage("没有可同步的主机被勾选。", 3000);
         }
         return;
     }
@@ -885,7 +1092,7 @@ void MainWindow::startOperations(bool performCopy)
     selectedTypes.removeDuplicates();
     if (selectedTypes.isEmpty()) {
         if (performCopy) {
-            statusBar()->showMessage("请先勾选至少一种同步类型", 3000);
+            statusBar()->showMessage("请先勾选至少一个同步类型。", 3000);
         }
         return;
     }
@@ -910,10 +1117,15 @@ void MainWindow::startOperations(bool performCopy)
             m_runningThreads.remove(host.id);
             m_runningWorkers.remove(host.id);
             if (!hasRunningWorkers()) {
+                if (m_isClosing) {
+                    finishExit();
+                    return;
+                }
+
                 if (m_pendingSyncAfterCurrentRun) {
                     m_pendingSyncAfterCurrentRun = false;
                     const QString pendingMessage = m_pendingSyncStatusMessage.isEmpty()
-                        ? QString("开始执行排队中的同步任务")
+                        ? QString("开始执行队列中的同步任务")
                         : m_pendingSyncStatusMessage;
                     m_pendingSyncStatusMessage.clear();
                     statusBar()->showMessage(pendingMessage, 3000);
@@ -921,16 +1133,16 @@ void MainWindow::startOperations(bool performCopy)
                     return;
                 }
 
-                statusBar()->showMessage("所有主机任务已完成", 3000);
+                statusBar()->showMessage("所有后台任务已完成", 3000);
             }
         });
 
         m_runningThreads.insert(host.id, thread);
         m_runningWorkers.insert(host.id, worker);
         updateHostRow(row, performCopy ? SyncWorker::Syncing : SyncWorker::Checking, 0,
-                      performCopy ? "同步中" : "检查中",
-                      performCopy ? "准备同步..." : "准备检查...",
-                      performCopy ? "准备同步..." : "准备检查...",
+                      performCopy ? "同步中" : "检测中",
+                      performCopy ? "准备同步..." : "准备检测...",
+                      performCopy ? "准备同步..." : "准备检测...",
                       0);
         thread->start();
     }
@@ -946,4 +1158,42 @@ void MainWindow::updateTimerInterval()
     if (m_pollTimer != nullptr) {
         m_pollTimer->setInterval(qMax(1, m_intervalSpin->value()) * 1000);
     }
+}
+
+bool MainWindow::isSystemAutoStartEnabled() const
+{
+#ifdef Q_OS_WIN
+    QSettings settings(kAutoStartRunKey, QSettings::NativeFormat);
+    const QString value = settings.value(kAutoStartValueName).toString().trimmed();
+    return value.compare(startupCommand(), Qt::CaseInsensitive) == 0;
+#else
+    return false;
+#endif
+}
+
+bool MainWindow::setSystemAutoStartEnabled(bool enabled, QString *errorMessage) const
+{
+#ifndef Q_OS_WIN
+    if (enabled && errorMessage != nullptr) {
+        *errorMessage = "当前平台不支持开机自启。";
+    }
+    return !enabled;
+#else
+    QSettings settings(kAutoStartRunKey, QSettings::NativeFormat);
+    if (enabled) {
+        settings.setValue(kAutoStartValueName, startupCommand());
+    } else {
+        settings.remove(kAutoStartValueName);
+    }
+    settings.sync();
+
+    if (settings.status() != QSettings::NoError) {
+        if (errorMessage != nullptr) {
+            *errorMessage = "无法写入当前用户的 Run 注册表项。";
+        }
+        return false;
+    }
+
+    return true;
+#endif
 }

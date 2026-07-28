@@ -47,7 +47,16 @@ AppConfig ConfigManager::load(const QString &filePath)
     const QJsonObject root = document.object();
     config.releaseDir = root.value("releaseDir").toString().trimmed();
     config.autoSync = root.value("autoSync").toBool(true);
+    config.startWithSystem = root.value("startWithSystem").toBool(false);
     config.scanIntervalSeconds = qMax(1, root.value("scanIntervalSeconds").toInt(5));
+
+    const QJsonArray historyArray = root.value("releaseDirHistory").toArray();
+    for (const QJsonValue &value : historyArray) {
+        const QString path = value.toString().trimmed();
+        if (!path.isEmpty() && !config.releaseDirHistory.contains(path)) {
+            config.releaseDirHistory.append(path);
+        }
+    }
 
     const QJsonArray typesArray = root.value("fileTypes").toArray();
     if (!typesArray.isEmpty()) {
@@ -110,7 +119,17 @@ bool ConfigManager::save(const QString &filePath, const AppConfig &config, QStri
     QJsonObject root;
     root.insert("releaseDir", config.releaseDir);
     root.insert("autoSync", config.autoSync);
+    root.insert("startWithSystem", config.startWithSystem);
     root.insert("scanIntervalSeconds", qMax(1, config.scanIntervalSeconds));
+
+    QJsonArray historyArray;
+    for (const QString &path : config.releaseDirHistory) {
+        const QString normalized = path.trimmed();
+        if (!normalized.isEmpty()) {
+            historyArray.append(normalized);
+        }
+    }
+    root.insert("releaseDirHistory", historyArray);
 
     QJsonArray typesArray;
     for (const QString &type : config.fileTypes) {
