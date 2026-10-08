@@ -459,8 +459,8 @@ void MainWindow::checkForUpdates()
     QNetworkRequest request(QUrl(QString::fromLatin1(kUpdateInfoUrl)));
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysNetwork);
-    request.setRawHeader("Accept", "application/json");
-    request.setRawHeader("User-Agent", QString("RemoteReleaseSync/%1").arg(QCoreApplication::applicationVersion()).toUtf8());
+    request.setRawHeader("Accept", "*/*");
+    request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
     QNetworkReply *reply = m_updateNetworkManager->get(request);
     m_checkUpdatesButton->setEnabled(false);
     m_checkUpdatesButton->setText("正在检查...");
