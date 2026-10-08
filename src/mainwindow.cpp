@@ -104,7 +104,7 @@ QString sharePathTooltip(const QString &sharePath)
 }
 
 static const int kMaxReleaseDirHistory = 20;
-static const char *kUpdateInfoUrl = "https://gitee.com/letmeseesee/remote-copying/raw/master/update.json";
+static const char *kUpdateInfoUrl = "https://raw.githubusercontent.com/UUxxXxxUU/SyncTool/master/update.json";
 #ifdef Q_OS_WIN
 static const char *kAutoStartRunKey = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const char *kAutoStartValueName = "RemoteReleaseSync";
