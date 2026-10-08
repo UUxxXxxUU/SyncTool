@@ -377,7 +377,7 @@ public:
 
         auto tryConnect = [&](const wchar_t *userPtr, const wchar_t *passPtr) -> DWORD {
             return WNetAddConnection2W(&resource,
-                                       password.isEmpty() ? nullptr : passPtr,
+                                       password.isEmpty() ? L"" : passPtr,
                                        username.isEmpty() ? nullptr : userPtr,
                                        0);
         };

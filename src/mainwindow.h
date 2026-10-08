@@ -17,8 +17,10 @@ class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QMenu;
+class QNetworkAccessManager;
 class QPoint;
 class QProgressBar;
+class QPushButton;
 class QSpinBox;
 class QTableWidget;
 class QTableWidgetItem;
@@ -47,6 +49,7 @@ private slots:
     void loadSelectedHostToEditor();
     void saveConfiguration();
     void syncNow();
+    void checkForUpdates();
     void addFileType();
     void removeSelectedFileType();
     void handleTypeItemChanged(QListWidgetItem *item);
@@ -116,6 +119,8 @@ private:
     QCheckBox *m_autoSyncCheck = nullptr;
     QCheckBox *m_startWithSystemCheck = nullptr;
     QSpinBox *m_intervalSpin = nullptr;
+    QPushButton *m_checkUpdatesButton = nullptr;
+    QNetworkAccessManager *m_updateNetworkManager = nullptr;
 
     QCheckBox *m_hostEnabledCheck = nullptr;
     QLineEdit *m_hostNameEdit = nullptr;

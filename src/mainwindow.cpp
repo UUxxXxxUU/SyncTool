@@ -19,6 +19,7 @@
 #include <QSystemTrayIcon>
 #include <QStyle>
 #include <QCryptographicHash>
+#include <QDesktopServices>
 #include <QDir>
 #include <QDirIterator>
 #include <QFileDialog>
@@ -27,23 +28,33 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QProcess>
 #include <QPoint>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QSslSocket>
 #include <QStatusBar>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
+#include <QVersionNumber>
 #include <QUuid>
 #include <qdatetime.h>
 
@@ -93,6 +104,7 @@ QString sharePathTooltip(const QString &sharePath)
 }
 
 static const int kMaxReleaseDirHistory = 20;
+static const char *kUpdateInfoUrl = "https://gitee.com/letmeseesee/remote-copying/raw/master/update.json";
 #ifdef Q_OS_WIN
 static const char *kAutoStartRunKey = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const char *kAutoStartValueName = "RemoteReleaseSync";
@@ -267,7 +279,7 @@ void MainWindow::finishExit()
 
 void MainWindow::setupUi()
 {
-    setWindowTitle("远程 Release 同步工具");
+    setWindowTitle(QString("远程 Release 同步工具 v%1").arg(QCoreApplication::applicationVersion()));
     resize(1280, 820);
 
     auto *central = new QWidget(this);
@@ -394,6 +406,10 @@ void MainWindow::setupUi()
 
     setCentralWidget(central);
 
+    m_checkUpdatesButton = new QPushButton("检查更新", this);
+    statusBar()->addPermanentWidget(m_checkUpdatesButton);
+    connect(m_checkUpdatesButton, &QPushButton::clicked, this, &MainWindow::checkForUpdates);
+
     connect(browseButton, &QPushButton::clicked, this, &MainWindow::browseReleaseDir);
     connect(addTypeButton, &QPushButton::clicked, this, &MainWindow::addFileType);
     connect(removeTypeButton, &QPushButton::clicked, this, &MainWindow::removeSelectedFileType);
@@ -425,6 +441,104 @@ void MainWindow::setupUi()
     });
     connect(m_releaseDirEdit->lineEdit(), &QLineEdit::editingFinished, this, &MainWindow::onReleaseDirEditFinished);
     connect(m_releaseDirEdit, QOverload<int>::of(&QComboBox::activated), this, &MainWindow::onReleaseDirEditFinished);
+}
+
+void MainWindow::checkForUpdates()
+{
+    if (m_isClosing || m_checkUpdatesButton == nullptr || !m_checkUpdatesButton->isEnabled()) {
+        return;
+    }
+    if (!QSslSocket::supportsSsl()) {
+        QMessageBox::warning(this, "检查更新失败", "当前发布包缺少 HTTPS 支持，请补齐与 Qt 配套的 TLS 运行库。");
+        return;
+    }
+
+    if (m_updateNetworkManager == nullptr) {
+        m_updateNetworkManager = new QNetworkAccessManager(this);
+    }
+    QNetworkRequest request(QUrl(QString::fromLatin1(kUpdateInfoUrl)));
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysNetwork);
+    request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("User-Agent", QString("RemoteReleaseSync/%1").arg(QCoreApplication::applicationVersion()).toUtf8());
+    QNetworkReply *reply = m_updateNetworkManager->get(request);
+    m_checkUpdatesButton->setEnabled(false);
+    m_checkUpdatesButton->setText("正在检查...");
+
+    // Qt 5.12 没有请求超时接口，用单次定时器中止迟迟未完成的请求。
+    QTimer *timeout = new QTimer(reply);
+    timeout->setSingleShot(true);
+    connect(timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, timeout]() {
+        timeout->stop();
+        reply->deleteLater();
+        m_checkUpdatesButton->setEnabled(true);
+        m_checkUpdatesButton->setText("检查更新");
+        if (m_isClosing) {
+            return;
+        }
+
+        if (reply->error() != QNetworkReply::NoError) {
+            const QString reason = reply->error() == QNetworkReply::OperationCanceledError
+                ? QString("检查超时，请稍后重试。")
+                : QString("无法获取更新信息：%1").arg(reply->errorString());
+            QMessageBox::warning(this, "检查更新失败", reason);
+            return;
+        }
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (statusCode != 200) {
+            QMessageBox::warning(this, "检查更新失败", QString("更新服务器返回 HTTP %1。").arg(statusCode));
+            return;
+        }
+
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+            QMessageBox::warning(this, "检查更新失败", "更新信息不是有效的 JSON 对象。");
+            return;
+        }
+        const QJsonObject info = document.object();
+        if (!info.value("version").isString() || !info.value("notes").isString()
+            || !info.value("downloadUrl").isString()) {
+            QMessageBox::warning(this, "检查更新失败", "更新信息缺少有效的 version、notes 或 downloadUrl 字段。");
+            return;
+        }
+
+        const QString latestVersionText = info.value("version").toString().trimmed();
+        const QString currentVersionText = QCoreApplication::applicationVersion();
+        const QRegularExpression versionPattern("\\A[0-9]+\\.[0-9]+\\.[0-9]+\\z");
+        const QVersionNumber latestVersion = QVersionNumber::fromString(latestVersionText);
+        const QVersionNumber currentVersion = QVersionNumber::fromString(currentVersionText);
+        if (!versionPattern.match(latestVersionText).hasMatch() || latestVersion.segmentCount() != 3
+            || !versionPattern.match(currentVersionText).hasMatch() || currentVersion.segmentCount() != 3) {
+            QMessageBox::warning(this, "检查更新失败", "版本号必须为三段数字，例如 1.0.0。");
+            return;
+        }
+        const QUrl downloadUrl(info.value("downloadUrl").toString().trimmed(), QUrl::StrictMode);
+        if (!downloadUrl.isValid() || downloadUrl.scheme() != "https" || downloadUrl.host().isEmpty()) {
+            QMessageBox::warning(this, "检查更新失败", "更新信息中的下载地址必须为有效的 HTTPS 地址。");
+            return;
+        }
+        if (QVersionNumber::compare(latestVersion, currentVersion) <= 0) {
+            QMessageBox::information(this, "检查更新", QString("当前已是最新版本（%1）。").arg(currentVersionText));
+            return;
+        }
+
+        QMessageBox updateDialog(this);
+        updateDialog.setWindowTitle("发现新版本");
+        updateDialog.setIcon(QMessageBox::Information);
+        updateDialog.setTextFormat(Qt::PlainText);
+        updateDialog.setText(QString("当前版本：%1\n最新版本：%2").arg(currentVersionText, latestVersionText));
+        const QString notes = info.value("notes").toString().trimmed();
+        updateDialog.setInformativeText(notes.isEmpty() ? QString("暂无更新说明。") : notes);
+        QPushButton *downloadButton = updateDialog.addButton("前往下载", QMessageBox::AcceptRole);
+        updateDialog.addButton("稍后", QMessageBox::RejectRole);
+        updateDialog.exec();
+        if (updateDialog.clickedButton() == downloadButton && !QDesktopServices::openUrl(downloadUrl)) {
+            QMessageBox::warning(this, "打开下载页面失败", QString("请在浏览器中访问：\n%1").arg(downloadUrl.toString()));
+        }
+    });
+    timeout->start(15000);
 }
 
 void MainWindow::onReleaseDirEditFinished()
