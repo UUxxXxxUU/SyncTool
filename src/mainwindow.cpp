@@ -5,6 +5,7 @@
 #include "syncworker.h"
 
 #include <algorithm>
+#include <memory>
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>
@@ -906,7 +907,7 @@ void MainWindow::handleHostTableItemChanged(QTableWidgetItem *item)
 
 void MainWindow::handleHostTableCellClicked(int row, int column)
 {
-    if (column != 2 || row < 0 || row >= m_config.hosts.size()) {
+    if (m_isClosing || column != 2 || row < 0 || row >= m_config.hosts.size()) {
         return;
     }
     if ((QApplication::keyboardModifiers() & Qt::ControlModifier) == 0) {
@@ -918,17 +919,41 @@ void MainWindow::handleHostTableCellClicked(int row, int column)
         return;
     }
 
-    if (!QProcess::startDetached("explorer.exe", QStringList() << sharePath)) {
-        statusBar()->showMessage(QString("打开共享目录失败：%1").arg(sharePath), 3000);
+    if (m_isOpeningShare
+        || (m_lastShareOpenPath.compare(sharePath, Qt::CaseInsensitive) == 0
+            && m_shareOpenClickTimer.isValid()
+            && m_shareOpenClickTimer.elapsed() < QApplication::doubleClickInterval())) {
         return;
     }
 
-    statusBar()->showMessage(QString("已打开共享目录：%1").arg(sharePath), 3000);
+    m_isOpeningShare = true;
+    m_lastShareOpenPath = sharePath;
+    m_shareOpenClickTimer.start();
+
+    const auto started = std::make_shared<bool>(false);
+    // 启动调用可能阻塞；线程不以窗口为父对象，避免退出时销毁仍在运行的线程。
+    auto *thread = QThread::create([sharePath, started]() {
+        *started = QProcess::startDetached("explorer.exe", QStringList() << sharePath);
+    });
+    connect(thread, &QThread::finished, this, [this, sharePath, started]() {
+        m_isOpeningShare = false;
+        if (m_isClosing) {
+            return;
+        }
+
+        statusBar()->showMessage(QString(*started ? "已请求打开共享目录：%1" : "启动资源管理器失败：%1")
+                                     .arg(sharePath), 3000);
+    }, Qt::QueuedConnection);
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+
+    statusBar()->showMessage(QString("正在请求打开共享目录：%1").arg(sharePath));
+    thread->start();
 }
 
 void MainWindow::handleHostTableCellDoubleClicked(int row, int column)
 {
-    if (column != 1 && column != 2) {
+    if (m_isClosing || (column != 1 && column != 2)
+        || (QApplication::keyboardModifiers() & Qt::ControlModifier) != 0) {
         return;
     }
 

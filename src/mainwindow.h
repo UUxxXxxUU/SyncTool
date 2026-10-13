@@ -3,6 +3,7 @@
 #include "appconfig.h"
 
 #include <QColor>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QMainWindow>
 #include <QPointer>
@@ -107,6 +108,9 @@ private:
     AppConfig m_config;
     QString m_configPath;
     QString m_lastFingerprint;
+    QString m_lastShareOpenPath;
+    QElapsedTimer m_shareOpenClickTimer;
+    bool m_isOpeningShare = false;
     bool m_isRefreshingTable = false;
     bool m_pendingSyncAfterCurrentRun = false;
     bool m_isClosing = false;

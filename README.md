@@ -69,8 +69,8 @@ https://raw.githubusercontent.com/UUxxXxxUU/SyncTool/master/update.json
 
 ```json
 {
-  "version": "1.0.0",
-  "notes": "新增手动检查更新功能。",
+  "version": "1.0.1",
+  "notes": "共享目录改为后台打开，增加 Ctrl 连续点击保护。",
   "downloadUrl": "https://github.com/UUxxXxxUU/SyncTool/releases"
 }
 ```
