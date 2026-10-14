@@ -46,6 +46,58 @@ cmake --build build --config Release
 RemoteReleaseSync.exe
 ```
 
+### Windows 打包与草稿 Release 上传
+
+`tools/package-release.ps1` 使用现有 Visual Studio 项目编译 `Release|x64`，收集运行依赖，生成 ZIP 和 SHA256 校验文件；加 `-Upload` 后自动上传到 GitHub 草稿 Release。
+
+准备环境：
+
+- Windows PowerShell 5.1 或更高版本。
+- Qt 5.12.3 的 `msvc2017_64` Kit，包含 `qmake.exe`、`windeployqt.exe`；脚本不更改依赖版本。
+- Visual Studio C++ 工具、现有项目使用的 v142 工具集、Windows SDK 10.0.26100.0，以及 Qt VS Tools 提供的 Qt/MSBuild。
+- 与当前 Qt 兼容的 OpenSSL 1.0.x x64 DLL：`libeay32.dll`、`ssleay32.dll`。文件名中的 `32` 不代表 DLL 是 32 位；脚本会检查 x64 架构。此 Qt Kit 使用 OpenSSL 1.0 接口，不能直接换成 OpenSSL 1.1 或 3；由使用者提供来源可信且依赖齐全的 DLL。
+- 上传时还需 Git、GitHub CLI，以及对 `UUxxXxxUU/SyncTool` 的写入权限。
+
+从项目根目录打包，替换示例中的 OpenSSL 目录：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 -OpenSslDir "C:\Deps\openssl-1.0-x64\bin"
+```
+
+Qt 默认从 PATH 中的 `qmake.exe` 定位，Visual Studio 自动选择带 v142 的安装，Qt/MSBuild 优先使用 `QtMsBuild` 环境变量，否则使用 `%LOCALAPPDATA%\QtMsBuild`。需要指定工具目录时：
+
+```powershell
+.\tools\package-release.ps1 `
+    -QtDir "C:\Qt\Qt5.12.3\5.12.3\msvc2017_64" `
+    -OpenSslDir "C:\Deps\openssl-1.0-x64\bin" `
+    -VisualStudioDir "C:\Program Files\Microsoft Visual Studio\2022\Enterprise" `
+    -QtMsBuildDir "$env:LOCALAPPDATA\QtMsBuild"
+```
+
+每次打包在已被 Git 忽略的 `artifacts/release-版本-时间-随机标识/` 下新建目录，将工程及其引用的源码复制到其中构建，保留原工程的 moc 和对象文件路径，不修改现有工程设置。输出 `RemoteReleaseSync-版本-windows-x64.zip` 及同名 `.zip.sha256`。脚本只从新的部署目录收集文件，包含 Qt DLL、平台插件、v142 运行库 DLL、OpenSSL DLL、README 和 LICENSE，不包含个人 `sync_config.json` 或编译中间文件。Windows 10/11 x64 系统提供 Universal CRT；OpenSSL DLL 若另有运行依赖，需另行核实。
+
+脚本不自动收集 OpenSSL 的额外运行依赖。例如本地测试使用的 OpenSSL 1.0.1g x64 DLL 依赖 `MSVCR100.dll`，目标电脑还需 Visual C++ 2010 x64 运行库；Universal CRT 和 v142 运行库不能替代它。正式分发前需补齐所选 DLL 的依赖并在干净电脑验证。
+
+脚本目前只复制应用的 LICENSE，未自动收集第三方许可。正式分发需随包保留所部署 Qt 及其第三方组件、OpenSSL 的许可证和版权声明，提供对应 Qt 源码获取信息，并核实所选二进制的再分发条件。
+
+安装 GitHub CLI 并首次登录：
+
+```powershell
+winget install --id GitHub.cli --exact
+# 安装后重新打开终端。
+gh auth login --hostname github.com
+```
+
+提交并推送版本对应的源码，确认工作区干净且本地 HEAD 与 GitHub `master` 一致，再执行打包并上传：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 -OpenSslDir "C:\Deps\openssl-1.0-x64\bin" -Upload
+```
+
+脚本核对 `src/main.cpp`、`CMakeLists.txt`、`update.json` 的版本，使用 `v版本` 标签、本次提交和 `update.json` 中的更新说明创建草稿，并上传 ZIP、SHA256 文件。已有同名 Release 会报错，已有标签必须指向同一提交；不会覆盖附件或正式发布。若上传途中失败，保留本地产物，GitHub 可能已留下草稿，需在网页检查后处理再重试。
+
+在未安装 Qt 的 Windows 10/11 x64 电脑中，将 ZIP 解压到有写入权限的目录，检查软件启动、HTTPS 更新检测及断网时 Ctrl 连续点击共享目录的行为。确认后打开 [GitHub Releases](https://github.com/UUxxXxxUU/SyncTool/releases)，编辑草稿并点击发布。草稿只有有权限的用户可见；公开发布完成后再更新线上 `update.json`。当前源码中的 1.0.1 更新清单已推送，需要补齐对应发行包。
+
 ## 使用说明
 
 1. 在“Release 目录”里选择本地编译输出目录。
