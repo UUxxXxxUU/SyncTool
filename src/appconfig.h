@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <QDateTime>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -13,6 +14,7 @@ struct HostEntry
     QString username;
     QString password;
     bool enabled = true;
+    QDateTime lastSyncUtc;
 };
 
 // 应用持久化配置。

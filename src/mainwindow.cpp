@@ -133,6 +133,10 @@ MainWindow::MainWindow(QWidget *parent)
     updateTimerInterval();
     m_pollTimer->start();
 
+    auto *lastSyncTimer = new QTimer(this);
+    connect(lastSyncTimer, &QTimer::timeout, this, &MainWindow::refreshLastSyncTimes);
+    lastSyncTimer->start(1000);
+
     statusBar()->showMessage(QString("配置文件：%1").arg(QDir::toNativeSeparators(m_configPath)), 5000);
     QTimer::singleShot(300, this, [this]() {
         if (!m_backgroundTasksPaused) {
@@ -392,7 +396,7 @@ void MainWindow::setupUi()
     auto *tableGroup = new QGroupBox("远程主机状态", central);
     auto *tableLayout = new QVBoxLayout(tableGroup);
     m_hostTable = new QTableWidget(tableGroup);
-    m_hostTable->setColumnCount(7);
+    m_hostTable->setColumnCount(8);
     m_hostTable->setHorizontalHeaderLabels(QStringList()
                                            << "启用"
                                            << "名称"
@@ -400,7 +404,8 @@ void MainWindow::setupUi()
                                            << "账号"
                                            << "进度"
                                            << "状态"
-                                           << "详情");
+                                           << "详情"
+                                           << "上次同步");
     m_hostTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_hostTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_hostTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
@@ -408,6 +413,8 @@ void MainWindow::setupUi()
     m_hostTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     m_hostTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
     m_hostTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
+    m_hostTable->horizontalHeader()->setSectionResizeMode(7, QHeaderView::Fixed);
+    m_hostTable->setColumnWidth(7, 160);
     m_hostTable->verticalHeader()->setVisible(false);
     m_hostTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_hostTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -660,6 +667,11 @@ void MainWindow::applyConfigToUi()
 
 void MainWindow::collectUiToConfig()
 {
+    const QString previousReleaseDir = normalizePathForUi(m_config.releaseDir);
+    QStringList previousTypes = m_config.selectedFileTypes;
+    previousTypes.removeDuplicates();
+    previousTypes.sort();
+
     m_config.releaseDir = normalizePathForUi(m_releaseDirEdit->currentText());
     m_config.autoSync = m_autoSyncCheck->isChecked();
     m_config.startWithSystem = m_startWithSystemCheck->isChecked();
@@ -679,6 +691,16 @@ void MainWindow::collectUiToConfig()
     types.removeDuplicates();
     m_config.fileTypes = allTypes;
     m_config.selectedFileTypes = types;
+
+    types.sort();
+    if (previousReleaseDir.compare(m_config.releaseDir, Qt::CaseInsensitive) != 0 || previousTypes != types) {
+        // 配置变化后，旧任务的成功回调不能恢复已清除的同步记录。
+        for (HostEntry &host : m_config.hosts) {
+            host.lastSyncUtc = QDateTime();
+            ++m_syncContextRevisions[host.id];
+        }
+        refreshLastSyncTimes();
+    }
 }
 
 void MainWindow::refreshTypeList()
@@ -725,6 +747,7 @@ void MainWindow::refreshHostTable()
         m_hostTable->setItem(row, 3, userItem);
         m_hostTable->setItem(row, 5, statusItem);
         m_hostTable->setItem(row, 6, detailItem);
+        m_hostTable->setItem(row, 7, new QTableWidgetItem());
 
         auto *progressBar = new QProgressBar(m_hostTable);
         progressBar->setRange(0, 100);
@@ -744,6 +767,51 @@ void MainWindow::refreshHostTable()
     }
 
     m_isRefreshingTable = false;
+    refreshLastSyncTimes();
+}
+
+void MainWindow::refreshLastSyncTimes()
+{
+    if (m_isClosing) {
+        return;
+    }
+
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    for (int row = 0; row < m_config.hosts.size(); ++row) {
+        QTableWidgetItem *item = m_hostTable->item(row, 7);
+        if (item == nullptr) {
+            continue;
+        }
+
+        const HostEntry &host = m_config.hosts.at(row);
+        QString text = "暂无同步记录";
+        QString tooltip = "暂无实际复制成功的记录";
+        if (host.lastSyncUtc.isValid()) {
+            tooltip = QString("上次实际复制成功：%1").arg(host.lastSyncUtc.toLocalTime().toString("yyyy-MM-dd HH:mm:ss t"));
+            const qint64 seconds = host.lastSyncUtc.secsTo(now);
+            if (host.lastSyncUtc > now) {
+                text = "时间异常";
+                tooltip += "\n记录时间晚于当前时间，请检查系统时间。";
+            } else if (seconds < 5) {
+                text = "刚刚";
+            } else if (seconds < 60) {
+                text = QString("%1 秒前").arg(seconds);
+            } else if (seconds < 3600) {
+                text = QString("%1 分钟前").arg(seconds / 60);
+            } else if (seconds < 86400) {
+                text = QString("%1 小时前").arg(seconds / 3600);
+            } else {
+                text = QString("%1 天前").arg(seconds / 86400);
+            }
+        }
+
+        if (item->text() != text) {
+            item->setText(text);
+        }
+        if (item->toolTip() != tooltip) {
+            item->setToolTip(tooltip);
+        }
+    }
 }
 
 void MainWindow::browseReleaseDir()
@@ -780,7 +848,13 @@ void MainWindow::addOrUpdateHost(bool updateExisting)
             QMessageBox::warning(this, "提示", "请在表格中选择一台主机后再更新。");
             return;
         }
-        host.id = m_config.hosts.at(row).id;
+        const HostEntry &previousHost = m_config.hosts.at(row);
+        host.id = previousHost.id;
+        if (normalizePathForUi(previousHost.sharePath).compare(host.sharePath, Qt::CaseInsensitive) == 0) {
+            host.lastSyncUtc = previousHost.lastSyncUtc;
+        } else {
+            ++m_syncContextRevisions[host.id];
+        }
         m_config.hosts[row] = host;
     } else {
         host.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -813,6 +887,7 @@ void MainWindow::removeSelectedHost()
         return;
     }
 
+    m_syncContextRevisions.remove(m_config.hosts.at(row).id);
     m_config.hosts.removeAt(row);
     refreshHostTable();
     clearHostEditor();
@@ -1097,6 +1172,30 @@ void MainWindow::handleWorkerState(const QString &hostId,
     }
 }
 
+void MainWindow::handleWorkerCopySucceeded(const QString &hostId, const QDateTime &completedUtc, quint64 revision)
+{
+    if (m_isClosing || !completedUtc.isValid() || m_stoppingHostIds.contains(hostId)) {
+        return;
+    }
+
+    collectUiToConfig();
+    if (m_syncContextRevisions.value(hostId) != revision) {
+        return;
+    }
+
+    for (HostEntry &host : m_config.hosts) {
+        if (host.id == hostId) {
+            host.lastSyncUtc = completedUtc.toUTC();
+            refreshLastSyncTimes();
+            QString error;
+            if (!ConfigManager::save(m_configPath, m_config, &error)) {
+                QMessageBox::warning(this, "同步时间保存失败", QString("文件同步已完成，但同步时间无法写入配置：%1").arg(error));
+            }
+            return;
+        }
+    }
+}
+
 void MainWindow::handleWorkerFinished(const QString &hostId)
 {
     QThread *thread = m_runningThreads.value(hostId, nullptr);
@@ -1317,6 +1416,10 @@ void MainWindow::startOperations(bool performCopy)
         connect(thread, &QThread::started, worker, &SyncWorker::process);
         connect(worker, &SyncWorker::progressChanged, this, &MainWindow::handleWorkerProgress);
         connect(worker, &SyncWorker::stateChanged, this, &MainWindow::handleWorkerState);
+        const quint64 revision = m_syncContextRevisions.value(host.id);
+        connect(worker, &SyncWorker::copySucceeded, this, [this, revision](const QString &hostId, const QDateTime &completedUtc) {
+            handleWorkerCopySucceeded(hostId, completedUtc, revision);
+        });
         connect(worker, &SyncWorker::finished, this, &MainWindow::handleWorkerFinished);
         connect(worker, &SyncWorker::finished, worker, &QObject::deleteLater);
         connect(thread, &QThread::finished, thread, &QObject::deleteLater);

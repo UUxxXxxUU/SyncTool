@@ -105,6 +105,7 @@ AppConfig ConfigManager::load(const QString &filePath)
         host.username = item.value("username").toString().trimmed();
         host.password = item.value("password").toString();
         host.enabled = item.value("enabled").toBool(true);
+        host.lastSyncUtc = QDateTime::fromString(item.value("lastSyncUtc").toString(), Qt::ISODateWithMs).toUTC();
 
         if (!host.sharePath.isEmpty()) {
             config.hosts.push_back(host);
@@ -162,6 +163,9 @@ bool ConfigManager::save(const QString &filePath, const AppConfig &config, QStri
         item.insert("username", host.username.trimmed());
         item.insert("password", host.password);
         item.insert("enabled", host.enabled);
+        if (host.lastSyncUtc.isValid()) {
+            item.insert("lastSyncUtc", host.lastSyncUtc.toUTC().toString(Qt::ISODateWithMs));
+        }
         hostsArray.append(item);
     }
     root.insert("hosts", hostsArray);

@@ -69,6 +69,7 @@ private slots:
                            const QString &detail,
                            const QString &detailTooltip);
     void handleWorkerFinished(const QString &hostId);
+    void refreshLastSyncTimes();
     void pollForChanges();
     void trayIconActivated(QSystemTrayIcon::ActivationReason reason);
     void realExit();
@@ -86,6 +87,7 @@ private:
     void collectUiToConfig();
     void refreshTypeList();
     void refreshHostTable();
+    void handleWorkerCopySucceeded(const QString &hostId, const QDateTime &completedUtc, quint64 revision);
     void addToReleaseDirHistory(const QString &path);
     void updateHostRow(int row,
                        int state,
@@ -144,6 +146,7 @@ private:
     QHash<QString, QThread *> m_runningThreads;
     QHash<QString, std::shared_ptr<std::atomic<bool>>> m_cancellationFlags;
     QSet<QString> m_stoppingHostIds;
+    QHash<QString, quint64> m_syncContextRevisions;
 
     QSystemTrayIcon *m_trayIcon = nullptr;
     QMenu *m_trayMenu = nullptr;

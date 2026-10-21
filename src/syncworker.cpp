@@ -794,5 +794,8 @@ void SyncWorker::process()
               hasBlockingDifference ? "仍有差异" : "已同步",
               syncDetailText(finalSummary),
               detailTooltipText(finalSummary, finalSummary.extraCount > 0));
+    if (!hasBlockingDifference && !isCancelled()) {
+        emit copySucceeded(m_host.id, QDateTime::currentDateTimeUtc());
+    }
     emitFinished();
 }

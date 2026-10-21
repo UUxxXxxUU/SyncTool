@@ -56,6 +56,7 @@ public slots:
     void cancel();
 
 signals:
+    void copySucceeded(const QString &hostId, const QDateTime &completedUtc);
     void progressChanged(const QString &hostId, int percent, const QString &detail);
     void stateChanged(const QString &hostId,
                       int state,
