@@ -135,7 +135,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     statusBar()->showMessage(QString("配置文件：%1").arg(QDir::toNativeSeparators(m_configPath)), 5000);
     QTimer::singleShot(300, this, [this]() {
-        startOperations(m_autoSyncCheck->isChecked());
+        if (!m_backgroundTasksPaused) {
+            startOperations(m_autoSyncCheck->isChecked());
+        }
     });
 
     // ===== 系统托盘 =====
@@ -241,20 +243,30 @@ void MainWindow::realExit()
     finishExit();
 }
 
-void MainWindow::requestWorkersToStop()
+void MainWindow::requestWorkerToStop(const QString &hostId)
 {
-    for (auto it = m_runningWorkers.constBegin(); it != m_runningWorkers.constEnd(); ++it) {
-        SyncWorker *worker = it.value();
-        if (worker != nullptr) {
-            worker->cancel();
-        }
+    const auto cancelled = m_cancellationFlags.value(hostId);
+    if (!cancelled) {
+        return;
     }
 
-    for (auto it = m_runningThreads.constBegin(); it != m_runningThreads.constEnd(); ++it) {
-        QThread *thread = it.value();
-        if (thread != nullptr) {
-            thread->quit();
+    // 取消标记独立于工作对象存活，避免线程结束时跨线程访问已销毁的对象。
+    cancelled->store(true);
+    m_stoppingHostIds.insert(hostId);
+    for (int row = 0; row < m_config.hosts.size(); ++row) {
+        if (m_config.hosts.at(row).id == hostId) {
+            const RowWidgets widgets = m_rowWidgets.value(hostId);
+            const int progress = widgets.progressBar != nullptr ? widgets.progressBar->value() : 0;
+            updateHostRow(row, SyncWorker::Stopping, 0, "正在停止", "正在等待后台任务停止...", QString(), progress);
+            break;
         }
+    }
+}
+
+void MainWindow::requestWorkersToStop()
+{
+    for (auto it = m_runningThreads.constBegin(); it != m_runningThreads.constEnd(); ++it) {
+        requestWorkerToStop(it.key());
     }
 }
 
@@ -333,6 +345,7 @@ void MainWindow::setupUi()
     auto *saveConfigButton = new QPushButton("保存配置", localGroup);
     auto *refreshButton = new QPushButton("刷新状态", localGroup);
     auto *syncButton = new QPushButton("手动同步", localGroup);
+    auto *stopButton = new QPushButton(style()->standardIcon(QStyle::SP_MediaStop), "停止全部", localGroup);
     optionRow->addWidget(m_autoSyncCheck);
     optionRow->addWidget(m_startWithSystemCheck);
     optionRow->addWidget(new QLabel("扫描间隔", localGroup));
@@ -341,6 +354,7 @@ void MainWindow::setupUi()
     optionRow->addWidget(saveConfigButton);
     optionRow->addWidget(refreshButton);
     optionRow->addWidget(syncButton);
+    optionRow->addWidget(stopButton);
     localLayout->addLayout(optionRow);
 
     auto *hostEditorGroup = new QGroupBox("远程主机编辑", central);
@@ -416,8 +430,12 @@ void MainWindow::setupUi()
     connect(removeTypeButton, &QPushButton::clicked, this, &MainWindow::removeSelectedFileType);
     connect(m_typeList, &QListWidget::itemChanged, this, &MainWindow::handleTypeItemChanged);
     connect(saveConfigButton, &QPushButton::clicked, this, &MainWindow::saveConfiguration);
-    connect(refreshButton, &QPushButton::clicked, this, [this]() { startOperations(false); });
+    connect(refreshButton, &QPushButton::clicked, this, [this]() {
+        m_backgroundTasksPaused = false;
+        startOperations(false);
+    });
     connect(syncButton, &QPushButton::clicked, this, &MainWindow::syncNow);
+    connect(stopButton, &QPushButton::clicked, this, &MainWindow::stopAllOperations);
     connect(addHostButton, &QPushButton::clicked, this, [this]() { addOrUpdateHost(false); });
     connect(updateHostButton, &QPushButton::clicked, this, [this]() { addOrUpdateHost(true); });
     connect(removeHostButton, &QPushButton::clicked, this, &MainWindow::removeSelectedHost);
@@ -434,8 +452,14 @@ void MainWindow::setupUi()
         updateTimerInterval();
         saveConfiguration();
     });
-    connect(m_autoSyncCheck, &QCheckBox::toggled, this, [this](bool) {
+    connect(m_autoSyncCheck, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (enabled) {
+            m_backgroundTasksPaused = false;
+        }
         saveConfiguration();
+        if (enabled) {
+            requestAutoSync("已开启自动同步");
+        }
     });
     connect(m_startWithSystemCheck, &QCheckBox::toggled, this, [this](bool) {
         saveConfiguration();
@@ -712,7 +736,11 @@ void MainWindow::refreshHostTable()
         widgets.progressBar = progressBar;
         m_rowWidgets.insert(host.id, widgets);
 
-        updateHostRow(row, SyncWorker::Checking, 0, "未检测", "等待状态刷新", "等待状态刷新", 0);
+        if (m_stoppingHostIds.contains(host.id)) {
+            updateHostRow(row, SyncWorker::Stopping, 0, "正在停止", "正在等待后台任务停止...", QString(), 0);
+        } else {
+            updateHostRow(row, SyncWorker::Checking, 0, "未检测", "等待状态刷新", "等待状态刷新", 0);
+        }
     }
 
     m_isRefreshingTable = false;
@@ -763,6 +791,9 @@ void MainWindow::addOrUpdateHost(bool updateExisting)
     }
 
     refreshHostTable();
+    if (!host.enabled) {
+        requestWorkerToStop(host.id);
+    }
     saveConfiguration();
     if (host.enabled) {
         requestAutoSync(QString("主机 [%1] 配置已更新，开始自动同步").arg(hostDisplayText(host)));
@@ -832,6 +863,11 @@ void MainWindow::saveConfiguration()
 
 void MainWindow::syncNow()
 {
+    if (m_isClosing) {
+        return;
+    }
+
+    m_backgroundTasksPaused = false;
     m_lastFingerprint = currentLocalFingerprint();
     if (hasRunningWorkers()) {
         m_pendingSyncAfterCurrentRun = true;
@@ -840,6 +876,24 @@ void MainWindow::syncNow()
     }
 
     startOperations(true);
+}
+
+void MainWindow::stopAllOperations()
+{
+    if (m_isClosing) {
+        return;
+    }
+
+    m_backgroundTasksPaused = true;
+    m_pendingSyncAfterCurrentRun = false;
+    m_pendingSyncStatusMessage.clear();
+    {
+        QSignalBlocker blocker(m_autoSyncCheck);
+        m_autoSyncCheck->setChecked(false);
+    }
+    requestWorkersToStop();
+    saveConfiguration();
+    statusBar()->showMessage(hasRunningWorkers() ? "正在停止所有后台任务..." : "已停止，自动同步已关闭");
 }
 
 void MainWindow::addFileType()
@@ -889,7 +943,7 @@ void MainWindow::handleTypeItemChanged(QListWidgetItem *item)
 
 void MainWindow::handleHostTableItemChanged(QTableWidgetItem *item)
 {
-    if (m_isRefreshingTable || item == nullptr || item->column() != 0) {
+    if (m_isClosing || m_isRefreshingTable || item == nullptr || item->column() != 0) {
         return;
     }
 
@@ -899,6 +953,9 @@ void MainWindow::handleHostTableItemChanged(QTableWidgetItem *item)
     }
 
     m_config.hosts[row].enabled = item->checkState() == Qt::Checked;
+    if (!m_config.hosts[row].enabled) {
+        requestWorkerToStop(m_config.hosts.at(row).id);
+    }
     saveConfiguration();
     if (m_config.hosts[row].enabled) {
         requestAutoSync(QString("已勾选主机 [%1]，开始自动同步").arg(hostDisplayText(m_config.hosts[row])));
@@ -998,6 +1055,10 @@ void MainWindow::copyHostNameFromRow(int row)
 
 void MainWindow::handleWorkerProgress(const QString &hostId, int percent, const QString &detail)
 {
+    if (m_stoppingHostIds.contains(hostId)) {
+        return;
+    }
+
     RowWidgets widgets = m_rowWidgets.value(hostId);
     if (widgets.progressBar != nullptr) {
         widgets.progressBar->setValue(percent);
@@ -1021,6 +1082,11 @@ void MainWindow::handleWorkerState(const QString &hostId,
                                    const QString &detail,
                                    const QString &detailTooltip)
 {
+    // 停止请求之后到达的旧信号不得覆盖停止状态；等线程退出后再显示已停止。
+    if (m_stoppingHostIds.contains(hostId)) {
+        return;
+    }
+
     for (int row = 0; row < m_config.hosts.size(); ++row) {
         if (m_config.hosts.at(row).id == hostId) {
             RowWidgets widgets = m_rowWidgets.value(hostId);
@@ -1041,7 +1107,7 @@ void MainWindow::handleWorkerFinished(const QString &hostId)
 
 void MainWindow::pollForChanges()
 {
-    if (m_isClosing || hasRunningWorkers()) {
+    if (m_isClosing || m_backgroundTasksPaused || hasRunningWorkers()) {
         return;
     }
 
@@ -1115,12 +1181,14 @@ QColor MainWindow::colorForState(int state, int mismatchPercent) const
         return QColor(255, green, blue);
     }
     case SyncWorker::Disconnected:
+    case SyncWorker::Stopped:
         return QColor(180, 180, 180);
     case SyncWorker::Error:
         return QColor(255, 199, 140);
     case SyncWorker::Syncing:
         return QColor(189, 215, 238);
     case SyncWorker::Checking:
+    case SyncWorker::Stopping:
     default:
         return QColor(221, 235, 247);
     }
@@ -1183,7 +1251,7 @@ QString MainWindow::normalizedExtension(const QString &value) const
 
 void MainWindow::requestAutoSync(const QString &statusMessage)
 {
-    if (!m_autoSyncCheck->isChecked()) {
+    if (m_isClosing || !m_autoSyncCheck->isChecked()) {
         return;
     }
 
@@ -1214,7 +1282,7 @@ QVector<int> MainWindow::targetRows() const
 
 void MainWindow::startOperations(bool performCopy)
 {
-    if (m_isClosing) {
+    if (m_isClosing || m_backgroundTasksPaused) {
         return;
     }
 
@@ -1254,7 +1322,17 @@ void MainWindow::startOperations(bool performCopy)
         connect(thread, &QThread::finished, thread, &QObject::deleteLater);
         connect(thread, &QThread::finished, this, [this, host]() {
             m_runningThreads.remove(host.id);
-            m_runningWorkers.remove(host.id);
+            m_cancellationFlags.remove(host.id);
+            if (m_stoppingHostIds.remove(host.id)) {
+                for (int row = 0; row < m_config.hosts.size(); ++row) {
+                    if (m_config.hosts.at(row).id == host.id) {
+                        const RowWidgets widgets = m_rowWidgets.value(host.id);
+                        const int progress = widgets.progressBar != nullptr ? widgets.progressBar->value() : 0;
+                        updateHostRow(row, SyncWorker::Stopped, 0, "已停止", "操作已被用户停止", QString(), progress);
+                        break;
+                    }
+                }
+            }
             if (!hasRunningWorkers()) {
                 if (m_isClosing) {
                     finishExit();
@@ -1272,12 +1350,12 @@ void MainWindow::startOperations(bool performCopy)
                     return;
                 }
 
-                statusBar()->showMessage("所有后台任务已完成", 3000);
+                statusBar()->showMessage(m_backgroundTasksPaused ? "已停止，自动同步已关闭" : "所有后台任务已结束", 3000);
             }
         });
 
         m_runningThreads.insert(host.id, thread);
-        m_runningWorkers.insert(host.id, worker);
+        m_cancellationFlags.insert(host.id, worker->cancellationFlag());
         updateHostRow(row, performCopy ? SyncWorker::Syncing : SyncWorker::Checking, 0,
                       performCopy ? "同步中" : "检测中",
                       performCopy ? "准备同步..." : "准备检测...",

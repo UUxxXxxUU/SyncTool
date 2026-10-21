@@ -2,11 +2,13 @@
 
 #include "appconfig.h"
 
+#include <atomic>
+#include <memory>
 #include <QColor>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QMainWindow>
-#include <QPointer>
+#include <QSet>
 #include <QSystemTrayIcon>
 
 QT_BEGIN_NAMESPACE
@@ -50,6 +52,7 @@ private slots:
     void loadSelectedHostToEditor();
     void saveConfiguration();
     void syncNow();
+    void stopAllOperations();
     void checkForUpdates();
     void addFileType();
     void removeSelectedFileType();
@@ -99,6 +102,7 @@ private:
     void requestAutoSync(const QString &statusMessage);
     void startOperations(bool performCopy);
     bool hasRunningWorkers() const;
+    void requestWorkerToStop(const QString &hostId);
     void requestWorkersToStop();
     void finishExit();
     void updateTimerInterval();
@@ -113,6 +117,7 @@ private:
     bool m_isOpeningShare = false;
     bool m_isRefreshingTable = false;
     bool m_pendingSyncAfterCurrentRun = false;
+    bool m_backgroundTasksPaused = false;
     bool m_isClosing = false;
     bool m_exitFinished = false;
     QString m_pendingSyncStatusMessage;
@@ -137,7 +142,8 @@ private:
 
     QHash<QString, RowWidgets> m_rowWidgets;
     QHash<QString, QThread *> m_runningThreads;
-    QHash<QString, QPointer<SyncWorker>> m_runningWorkers;
+    QHash<QString, std::shared_ptr<std::atomic<bool>>> m_cancellationFlags;
+    QSet<QString> m_stoppingHostIds;
 
     QSystemTrayIcon *m_trayIcon = nullptr;
     QMenu *m_trayMenu = nullptr;

@@ -431,6 +431,13 @@ bool runRobocopy(SyncWorker *worker,
                  int threadCount,
                  QString *error)
 {
+    if (worker == nullptr || worker->isCancelled()) {
+        if (error != nullptr) {
+            *error = QString("同步未启动或已被用户停止");
+        }
+        return false;
+    }
+
     if (pendingCopies.isEmpty()) {
         return true;
     }
@@ -572,16 +579,21 @@ SyncWorker::SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes
     , m_releaseDir(releaseDir)
     , m_fileTypes(fileTypes)
     , m_performCopy(performCopy)
-    , m_cancelled(false)
+    , m_cancelled(std::make_shared<std::atomic<bool>>(false))
 {
 }
 
 void SyncWorker::cancel()
 {
-    m_cancelled = true;
+    m_cancelled->store(true);
 }
 
 bool SyncWorker::isCancelled() const
+{
+    return m_cancelled->load();
+}
+
+std::shared_ptr<std::atomic<bool>> SyncWorker::cancellationFlag() const
 {
     return m_cancelled;
 }
@@ -607,8 +619,24 @@ void SyncWorker::emitFinished()
 
 void SyncWorker::finishWithError(int state, const QString &statusText, const QString &detail)
 {
+    if (finishIfCancelled()) {
+        return;
+    }
+
     emitState(state, 100, statusText, detail, detail);
     emitFinished();
+}
+
+bool SyncWorker::finishIfCancelled()
+{
+    if (!isCancelled()) {
+        return false;
+    }
+
+    const QString detail = QString("%1：操作已被用户停止").arg(hostDisplayName(m_host));
+    emitState(Stopped, 0, "已停止", detail, detail);
+    emitFinished();
+    return true;
 }
 
 QString SyncWorker::normalizedReleaseDir() const
@@ -623,6 +651,10 @@ QString SyncWorker::normalizedRemoteDir() const
 
 void SyncWorker::process()
 {
+    if (finishIfCancelled()) {
+        return;
+    }
+
     const QString localRoot = normalizedReleaseDir();
     const QString remoteRoot = normalizedRemoteDir();
     const QString displayName = hostDisplayName(m_host);
@@ -665,8 +697,7 @@ void SyncWorker::process()
     return;
 #endif
 
-    if (m_cancelled) {
-        finishWithError(Error, "已取消", QString("%1：操作已被用户取消").arg(displayName));
+    if (finishIfCancelled()) {
         return;
     }
 
@@ -678,26 +709,27 @@ void SyncWorker::process()
         }
     }
 
-    if (m_cancelled) {
-        finishWithError(Error, "已取消", QString("%1：操作已被用户取消").arg(displayName));
+    if (finishIfCancelled()) {
         return;
     }
 
     const QHash<QString, LocalFile> localFiles = collectLocalFiles(localRoot, typeSet, this);
-    if (m_cancelled) {
-        finishWithError(Error, "已取消", QString("%1：操作已被用户取消").arg(displayName));
+    if (finishIfCancelled()) {
         return;
     }
 
     const QHash<QString, RemoteFile> remoteFiles = collectRemoteFiles(remoteRoot, typeSet, this);
-    if (m_cancelled) {
-        finishWithError(Error, "已取消", QString("%1：操作已被用户取消").arg(displayName));
+    if (finishIfCancelled()) {
         return;
     }
 
     QVector<PendingCopy> pendingCopies;
     ComparisonSummary summary = compareFiles(localFiles, remoteFiles, m_performCopy ? &pendingCopies : nullptr, remoteRoot);
     const int initialMismatch = mismatchPercent(summary);
+
+    if (finishIfCancelled()) {
+        return;
+    }
 
     if (!m_performCopy) {
         emitProgress(initialMismatch == 0 ? 100 : 0, initialMismatch == 0 ? "已检查完成" : "存在差异");
@@ -722,8 +754,7 @@ void SyncWorker::process()
         return;
     }
 
-    if (m_cancelled) {
-        finishWithError(Error, "已取消", QString("%1：同步已被用户取消").arg(displayName));
+    if (finishIfCancelled()) {
         return;
     }
 
@@ -741,6 +772,10 @@ void SyncWorker::process()
     if (!runRobocopy(this, localRoot, remoteRoot, pendingCopies, typeSet, threadCount, &copyError)) {
         summary.failedCount++;
         finishWithError(Error, "同步失败", copyError);
+        return;
+    }
+
+    if (finishIfCancelled()) {
         return;
     }
 
