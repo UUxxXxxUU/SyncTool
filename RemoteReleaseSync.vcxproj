@@ -193,7 +193,10 @@
     <QtMoc Include="src\mainwindow.h" />
     <QtMoc Include="src\syncworker.h" />
   </ItemGroup>
-  <ItemGroup />
+  <ItemGroup>
+    <ResourceCompile Include="resources\app.rc" />
+    <QtRcc Include="resources\app.qrc" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="$(QtMsBuild)\qt.targets" Condition="Exists('$(QtMsBuild)\qt.targets')" />
   <ImportGroup Label="ExtensionTargets" />

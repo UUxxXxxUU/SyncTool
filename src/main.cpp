@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QFont>
+#include <QIcon>
 #include <QMessageBox>
 #include <QSharedMemory>
 
@@ -13,6 +14,13 @@ int main(int argc, char *argv[])
     app.setApplicationVersion("1.0.1");
     app.setOrganizationName("LocalTools");
     app.setQuitOnLastWindowClosed(false);
+
+    QIcon appIcon;
+    for (const int size : {16, 24, 32, 48, 64, 128, 256}) {
+        appIcon.addFile(QString(":/icons/app_%1.png").arg(size), QSize(size, size));
+    }
+    app.setWindowIcon(appIcon);
+
     const bool startupLaunch = app.arguments().contains("--startup");
 
     QSharedMemory singleInstanceGuard("LocalTools.RemoteReleaseSync.SingleInstance");

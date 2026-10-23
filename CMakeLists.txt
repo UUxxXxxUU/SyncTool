@@ -20,6 +20,7 @@ add_executable(RemoteReleaseSync
     src/mainwindow.h
     src/syncworker.cpp
     src/syncworker.h
+    resources/app.qrc
 )
 
 target_include_directories(RemoteReleaseSync PRIVATE src)
@@ -27,6 +28,7 @@ target_include_directories(RemoteReleaseSync PRIVATE src)
 target_link_libraries(RemoteReleaseSync PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network)
 
 if (WIN32)
+    target_sources(RemoteReleaseSync PRIVATE resources/app.rc)
     target_link_libraries(RemoteReleaseSync PRIVATE Mpr)
 endif()
 

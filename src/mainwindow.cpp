@@ -146,7 +146,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ===== 系统托盘 =====
     m_trayIcon = new QSystemTrayIcon(this);
-    m_trayIcon->setIcon(style()->standardIcon(QStyle::SP_ComputerIcon));
+    m_trayIcon->setIcon(QApplication::windowIcon());
     m_trayIcon->setToolTip("远程 Release 同步工具");
 
     m_trayMenu = new QMenu(this);
