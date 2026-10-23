@@ -255,6 +255,17 @@ QStringList robocopyPatterns(const QSet<QString> &types)
     return patterns;
 }
 
+QString formatBytes(qint64 bytes)
+{
+    if (bytes >= 1024LL * 1024 * 1024) {
+        return QString("%1 GB").arg(bytes / (1024.0 * 1024 * 1024), 0, 'f', 2);
+    }
+    if (bytes >= 1024LL * 1024) {
+        return QString("%1 MB").arg(bytes / (1024.0 * 1024), 0, 'f', 1);
+    }
+    return QString("%1 KB").arg(qMax<qint64>(bytes, 0) / 1024);
+}
+
 QString outputTail(const QString &output, int maxLines = 6)
 {
     QStringList lines;
@@ -477,11 +488,43 @@ bool runRobocopy(SyncWorker *worker,
         return false;
     }
 
-    int pulsePercent = 1;
-    int elapsedSeconds = 0;
-    worker->emitProgress(pulsePercent, QString("robocopy 同步中，%1 线程").arg(threadCount));
+    // /MT 多线程下各文件并行复制、几乎同时完成，按文件个数统计会从 0 直接跳到 100；
+    // 目标文件又会被预分配到完整大小，也无法按目标文件大小统计。
+    // 因此读取 robocopy 进程累计写入字节数（GetProcessIoCounters）作为真实复制进度。
+    HANDLE processHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(process.processId()));
+    struct HandleCloser
+    {
+        HANDLE handle;
+        ~HandleCloser()
+        {
+            if (handle != nullptr) {
+                CloseHandle(handle);
+            }
+        }
+    } handleCloser{processHandle};
 
-    while (!process.waitForFinished(1000)) {
+    qint64 writtenBytes = 0;
+    int elapsedSeconds = 0;
+    int elapsedTicks = 0;
+    auto emitCopyProgress = [&]() {
+        IO_COUNTERS counters = {};
+        if (processHandle != nullptr && GetProcessIoCounters(processHandle, &counters)) {
+            writtenBytes = qMin(static_cast<qint64>(counters.WriteTransferCount), totalBytes);
+        }
+        const int percent = totalBytes > 0 ? static_cast<int>(writtenBytes * 99 / totalBytes) : 0;
+        worker->emitProgress(qMax(1, percent),
+                             QString("robocopy 同步中，%1 线程，%2 个文件，已复制 %3 / %4，已运行 %5 秒")
+                                 .arg(threadCount)
+                                 .arg(pendingCopies.size())
+                                 .arg(formatBytes(writtenBytes))
+                                 .arg(formatBytes(totalBytes))
+                                 .arg(elapsedSeconds));
+    };
+
+    emitCopyProgress();
+
+    // 每 500ms 刷新一次进度并检查取消；进程已结束时 waitForFinished 也返回 false，所以用 state() 判断
+    while (process.state() != QProcess::NotRunning) {
         if (worker->isCancelled()) {
             process.kill();
             process.waitForFinished(3000);
@@ -490,12 +533,12 @@ bool runRobocopy(SyncWorker *worker,
             }
             return false;
         }
-        elapsedSeconds++;
-        pulsePercent = qMin(95, pulsePercent + 1);
-        worker->emitProgress(pulsePercent,
-                             QString("robocopy 同步中，%1 线程，已运行 %2 秒")
-                                 .arg(threadCount)
-                                 .arg(elapsedSeconds));
+        if (process.waitForFinished(500)) {
+            break;
+        }
+        elapsedTicks++;
+        elapsedSeconds = elapsedTicks / 2;
+        emitCopyProgress();
     }
 
     const QString output = QString::fromLocal8Bit(process.readAllStandardOutput());
