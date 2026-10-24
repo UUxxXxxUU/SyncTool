@@ -219,6 +219,19 @@ foreach ($item in $sourceItems) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $destinationPath) -Force | Out-Null
     Copy-Item -LiteralPath $sourcePath -Destination $destinationPath
 }
+# .qrc and .rc files reference icons by relative path, so copy each resource directory as a whole.
+$resourceItems = @($projectXml.SelectNodes("//*[local-name()='ItemGroup']/*[@Include and (local-name()='QtRcc' or local-name()='ResourceCompile')]"))
+$resourceDirs = @($resourceItems | ForEach-Object {
+    Split-Path -Parent ([System.IO.Path]::GetFullPath((Join-Path $projectRoot $_.GetAttribute('Include'))))
+} | Select-Object -Unique)
+foreach ($resourceDir in $resourceDirs) {
+    if (!$resourceDir.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Resource files must be in a subdirectory of the repository: $resourceDir"
+    }
+    $destinationDir = Join-Path $buildDir $resourceDir.Substring($rootPrefix.Length)
+    New-Item -ItemType Directory -Path (Split-Path -Parent $destinationDir) -Force | Out-Null
+    Copy-Item -LiteralPath $resourceDir -Destination $destinationDir -Recurse
+}
 
 $previousPath = $env:PATH
 try {
