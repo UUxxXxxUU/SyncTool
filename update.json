@@ -1,5 +1,5 @@
 {
-  "version": "1.0.1",
-  "notes": "共享目录改为后台打开，增加 Ctrl 连续点击保护。",
+  "version": "1.0.2",
+  "notes": "同步进度改为按实际写入字节数显示；新增应用图标；显示并保存主机上次同步时间；修复停止同步不生效的问题。",
   "downloadUrl": "https://github.com/UUxxXxxUU/SyncTool/releases"
 }
