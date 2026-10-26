@@ -1,4 +1,4 @@
-﻿QT += widgets
+QT += widgets network
 
 CONFIG += c++17
 TEMPLATE = app
@@ -16,4 +16,7 @@ HEADERS += \
     src/mainwindow.h \
     src/syncworker.h
 
+RESOURCES += resources/app.qrc
+
+win32:RC_FILE = resources/app.rc
 win32:LIBS += -lMpr

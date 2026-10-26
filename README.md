@@ -15,6 +15,7 @@
 - 不一致按差异程度显示不同深浅红色
 - 共享不可达显示断线灰色
 - 配置自动保存到程序目录下的 `sync_config.json`
+- 支持手动检查 GitHub 上的新版本，并打开发行版下载页面
 
 ## 构建方式
 
@@ -45,6 +46,58 @@ cmake --build build --config Release
 RemoteReleaseSync.exe
 ```
 
+### Windows 打包与草稿 Release 上传
+
+`tools/package-release.ps1` 使用现有 Visual Studio 项目编译 `Release|x64`，收集运行依赖，生成 ZIP 和 SHA256 校验文件；加 `-Upload` 后自动上传到 GitHub 草稿 Release。
+
+准备环境：
+
+- Windows PowerShell 5.1 或更高版本。
+- Qt 5.12.3 的 `msvc2017_64` Kit，包含 `qmake.exe`、`windeployqt.exe`；脚本不更改依赖版本。
+- Visual Studio C++ 工具、现有项目使用的 v142 工具集、Windows SDK 10.0.26100.0，以及 Qt VS Tools 提供的 Qt/MSBuild。
+- 与当前 Qt 兼容的 OpenSSL 1.0.x x64 DLL：`libeay32.dll`、`ssleay32.dll`。文件名中的 `32` 不代表 DLL 是 32 位；脚本会检查 x64 架构。此 Qt Kit 使用 OpenSSL 1.0 接口，不能直接换成 OpenSSL 1.1 或 3；由使用者提供来源可信且依赖齐全的 DLL。
+- 上传时还需 Git、GitHub CLI，以及对 `UUxxXxxUU/SyncTool` 的写入权限。
+
+从项目根目录打包，替换示例中的 OpenSSL 目录：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 -OpenSslDir "C:\Deps\openssl-1.0-x64\bin"
+```
+
+Qt 默认从 PATH 中的 `qmake.exe` 定位，Visual Studio 自动选择带 v142 的安装，Qt/MSBuild 优先使用 `QtMsBuild` 环境变量，否则使用 `%LOCALAPPDATA%\QtMsBuild`。需要指定工具目录时：
+
+```powershell
+.\tools\package-release.ps1 `
+    -QtDir "C:\Qt\Qt5.12.3\5.12.3\msvc2017_64" `
+    -OpenSslDir "C:\Deps\openssl-1.0-x64\bin" `
+    -VisualStudioDir "C:\Program Files\Microsoft Visual Studio\2022\Enterprise" `
+    -QtMsBuildDir "$env:LOCALAPPDATA\QtMsBuild"
+```
+
+每次打包在已被 Git 忽略的 `artifacts/release-版本-时间-随机标识/` 下新建目录，将工程及其引用的源码复制到其中构建，保留原工程的 moc 和对象文件路径，不修改现有工程设置。输出 `RemoteReleaseSync-版本-windows-x64.zip` 及同名 `.zip.sha256`。脚本只从新的部署目录收集文件，包含 Qt DLL、平台插件、v142 运行库 DLL、OpenSSL DLL、README 和 LICENSE，不包含个人 `sync_config.json` 或编译中间文件。Windows 10/11 x64 系统提供 Universal CRT；OpenSSL DLL 若另有运行依赖，需另行核实。
+
+脚本不自动收集 OpenSSL 的额外运行依赖。例如本地测试使用的 OpenSSL 1.0.1g x64 DLL 依赖 `MSVCR100.dll`，目标电脑还需 Visual C++ 2010 x64 运行库；Universal CRT 和 v142 运行库不能替代它。正式分发前需补齐所选 DLL 的依赖并在干净电脑验证。
+
+脚本目前只复制应用的 LICENSE，未自动收集第三方许可。正式分发需随包保留所部署 Qt 及其第三方组件、OpenSSL 的许可证和版权声明，提供对应 Qt 源码获取信息，并核实所选二进制的再分发条件。
+
+安装 GitHub CLI 并首次登录：
+
+```powershell
+winget install --id GitHub.cli --exact
+# 安装后重新打开终端。
+gh auth login --hostname github.com
+```
+
+提交并推送版本对应的源码，确认工作区干净且本地 HEAD 与 GitHub `master` 一致，再执行打包并上传：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 -OpenSslDir "C:\Deps\openssl-1.0-x64\bin" -Upload
+```
+
+脚本核对 `src/main.cpp`、`CMakeLists.txt`、`update.json` 的版本，使用 `v版本` 标签、本次提交和 `update.json` 中的更新说明创建草稿，并上传 ZIP、SHA256 文件。已有同名 Release 会报错，已有标签必须指向同一提交；不会覆盖附件或正式发布。若上传途中失败，保留本地产物，GitHub 可能已留下草稿，需在网页检查后处理再重试。
+
+在未安装 Qt 的 Windows 10/11 x64 电脑中，将 ZIP 解压到有写入权限的目录，检查软件启动、HTTPS 更新检测及断网时 Ctrl 连续点击共享目录的行为。确认后打开 [GitHub Releases](https://github.com/UUxxXxxUU/SyncTool/releases)，编辑草稿并点击发布。草稿只有有权限的用户可见；公开发布完成后再更新线上 `update.json`。当前源码中的 1.0.1 更新清单已推送，需要补齐对应发行包。
+
 ## 使用说明
 
 1. 在“Release 目录”里选择本地编译输出目录。
@@ -54,6 +107,35 @@ RemoteReleaseSync.exe
 5. 点击“刷新状态”可以只检查一致性，不执行复制。
 6. 点击“立即同步”会把勾选主机与所选类型执行同步。
 7. 打开“检测到本地文件变化后自动同步”后，程序会按扫描间隔自动检测本地变化并同步。
+8. 窗口标题显示当前软件版本，点击右下角“检查更新”可查看是否有新版；有新版时可以查看更新说明并前往下载。
+
+## 软件更新发布
+
+程序仅在点击“检查更新”时联网，异步检查最多等待 15 秒。更新信息固定读取 GitHub 公开仓库 `UUxxXxxUU/SyncTool` 的 `master` 分支根目录的文件：
+
+```text
+https://raw.githubusercontent.com/UUxxXxxUU/SyncTool/master/update.json
+```
+
+`update.json` 格式如下，三个字段均为字符串，版本号使用三段数字（例如 `1.10.0`）：
+
+```json
+{
+  "version": "1.0.1",
+  "notes": "共享目录改为后台打开，增加 Ctrl 连续点击保护。",
+  "downloadUrl": "https://github.com/UUxxXxxUU/SyncTool/releases"
+}
+```
+
+发布步骤：
+
+1. 更新 `src/main.cpp` 中 `setApplicationVersion` 的版本号，并同步修改 CMake 项目版本。
+2. 生成完整发布包，包含 EXE、Qt DLL、平台插件及与当前 Qt 配套的 HTTPS/TLS 运行库；新增功能需要 Qt Network 模块。不要打包个人 `sync_config.json`。
+3. 在 GitHub 仓库的 Releases 页面（`https://github.com/UUxxXxxUU/SyncTool/releases`）创建对应版本的发行版，填写说明并上传 ZIP；确认使用者可以访问下载页面。
+4. 发行包就绪后，将 `update.json` 的版本号、说明及 HTTPS 下载地址更新并推送到 GitHub 的 `master`。仅修改本地文件、Gitee 仓库或其他分支不会生效。
+5. 使用者下载后先通过托盘菜单“退出”关闭程序，再替换程序文件，保留自己的 `sync_config.json`。
+
+没有更新检测入口或仍使用 Gitee 更新地址的旧版，需要先手动安装一次使用 GitHub 更新地址的版本。网络失败、超时或版本信息格式错误会提示“检查更新失败”，不会被视为“当前已是最新版本”。
 
 ## 状态说明
 

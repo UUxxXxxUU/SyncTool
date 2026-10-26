@@ -3,6 +3,7 @@
 #include "appconfig.h"
 
 #include <atomic>
+#include <memory>
 #include <QObject>
 #include <QStringList>
 
@@ -18,7 +19,9 @@ public:
         InSync = 2,
         Mismatch = 3,
         Disconnected = 4,
-        Error = 5
+        Error = 5,
+        Stopping = 6,
+        Stopped = 7
     };
     Q_ENUM(VisualState)
 
@@ -46,12 +49,14 @@ public:
     SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes, bool performCopy, QObject *parent = nullptr);
     void emitProgress(int percent, const QString &detail);
     bool isCancelled() const;
+    std::shared_ptr<std::atomic<bool>> cancellationFlag() const;
 
 public slots:
     void process();
     void cancel();
 
 signals:
+    void copySucceeded(const QString &hostId, const QDateTime &completedUtc);
     void progressChanged(const QString &hostId, int percent, const QString &detail);
     void stateChanged(const QString &hostId,
                       int state,
@@ -69,6 +74,7 @@ private:
                    const QString &detailTooltip = QString());
     void emitFinished();
     void finishWithError(int state, const QString &statusText, const QString &detail);
+    bool finishIfCancelled();
 
     QString normalizedReleaseDir() const;
     QString normalizedRemoteDir() const;
@@ -77,5 +83,5 @@ private:
     QString m_releaseDir;
     QStringList m_fileTypes;
     bool m_performCopy = false;
-    std::atomic<bool> m_cancelled;
+    std::shared_ptr<std::atomic<bool>> m_cancelled;
 };

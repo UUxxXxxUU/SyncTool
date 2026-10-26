@@ -361,3 +361,8 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Local assistant/tooling cache
+.claude/
+.cx-cache/
+build-codex/
