@@ -723,9 +723,9 @@ void SyncWorker::process()
         return;
     }
 
-    emitState(m_performCopy ? Syncing : Checking,
+    emitState(Checking,
               0,
-              m_performCopy ? "同步中" : "检查中",
+              "检查中",
               QString("%1：正在连接共享目录").arg(displayName));
 
 #ifdef Q_OS_WIN
@@ -775,7 +775,6 @@ void SyncWorker::process()
     }
 
     if (!m_performCopy) {
-        emitProgress(initialMismatch == 0 ? 100 : 0, initialMismatch == 0 ? "已检查完成" : "存在差异");
         emitState(initialMismatch == 0 ? InSync : Mismatch,
                   initialMismatch,
                   initialMismatch == 0 ? "完全一致" : "不一致",

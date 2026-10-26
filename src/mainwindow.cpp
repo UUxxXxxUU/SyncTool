@@ -1261,10 +1261,16 @@ void MainWindow::updateHostRow(int row,
 
     const QString hostId = m_config.hosts.value(row).id;
     RowWidgets widgets = m_rowWidgets.value(hostId);
-    if (widgets.progressBar != nullptr) {
-        widgets.progressBar->setValue(progressPercent);
-        widgets.progressBar->setStyleSheet(QString("QProgressBar { text-align: center; } QProgressBar::chunk { background-color: %1; }")
-                                               .arg(color.darker(110).name()));
+    // 检查阶段保留上次同步进度，避免周期检查造成进度条闪动。
+    if (widgets.progressBar != nullptr && state != SyncWorker::Checking) {
+        if (widgets.progressBar->value() != progressPercent) {
+            widgets.progressBar->setValue(progressPercent);
+        }
+        const QString progressStyle = QString("QProgressBar { text-align: center; } QProgressBar::chunk { background-color: %1; }")
+                                          .arg(color.darker(110).name());
+        if (widgets.progressBar->styleSheet() != progressStyle) {
+            widgets.progressBar->setStyleSheet(progressStyle);
+        }
     }
 }
 
@@ -1459,10 +1465,10 @@ void MainWindow::startOperations(bool performCopy)
 
         m_runningThreads.insert(host.id, thread);
         m_cancellationFlags.insert(host.id, worker->cancellationFlag());
-        updateHostRow(row, performCopy ? SyncWorker::Syncing : SyncWorker::Checking, 0,
-                      performCopy ? "同步中" : "检测中",
-                      performCopy ? "准备同步..." : "准备检测...",
-                      performCopy ? "准备同步..." : "准备检测...",
+        updateHostRow(row, SyncWorker::Checking, 0,
+                      "检测中",
+                      "准备检测...",
+                      "准备检测...",
                       0);
         thread->start();
     }
