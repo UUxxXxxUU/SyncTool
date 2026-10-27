@@ -48,6 +48,7 @@ public:
 
     SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes, bool performCopy, QObject *parent = nullptr);
     void emitProgress(int percent, const QString &detail);
+    void emitRecentFiles(const QStringList &files, const QString &title);
     bool isCancelled() const;
     std::shared_ptr<std::atomic<bool>> cancellationFlag() const;
 
@@ -58,6 +59,7 @@ public slots:
 signals:
     void copySucceeded(const QString &hostId, const QDateTime &completedUtc);
     void progressChanged(const QString &hostId, int percent, const QString &detail);
+    void recentFilesChanged(const QString &hostId, const QStringList &files, const QString &title);
     void stateChanged(const QString &hostId,
                       int state,
                       int mismatchPercent,

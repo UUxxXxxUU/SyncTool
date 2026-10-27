@@ -21,11 +21,14 @@
 #include <QStyle>
 #include <QCryptographicHash>
 #include <QDesktopServices>
+#include <QCursor>
 #include <QDir>
 #include <QDirIterator>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
@@ -39,11 +42,17 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPainter>
+#include <QPersistentModelIndex>
 #include <QProcess>
 #include <QPoint>
+#include <QPlainTextEdit>
+#include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScreen>
+#include <QScrollBar>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -52,12 +61,280 @@
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QThread>
+#include <QTextOption>
 #include <QTimer>
+#include <QToolTip>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QVersionNumber>
 #include <QUuid>
 #include <qdatetime.h>
+
+class RecentCopyPreview : public QFrame
+{
+public:
+    explicit RecentCopyPreview(QWidget *parent)
+        : QFrame(parent, Qt::ToolTip | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus)
+    {
+        setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_ShowWithoutActivating);
+        setObjectName("recentCopyPreview");
+        setStyleSheet("QLabel { color: #20252b; background: transparent; border: none; }"
+                      "QPlainTextEdit { color: #20252b; background: transparent; border: none; }");
+
+        auto *layout = new QVBoxLayout(this);
+        m_title = new QLabel("本轮拷贝预览", this);
+        m_title->setWordWrap(true);
+        layout->addWidget(m_title);
+        m_text = new QPlainTextEdit(this);
+        m_text->viewport()->setAutoFillBackground(false);
+        m_text->setReadOnly(true);
+        m_text->setFocusPolicy(Qt::NoFocus);
+        m_text->setWordWrapMode(QTextOption::WrapAnywhere);
+        m_text->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        layout->addWidget(m_text);
+
+        m_showTimer.setSingleShot(true);
+        m_showTimer.setInterval(100);
+        connect(&m_showTimer, &QTimer::timeout, this, [this]() {
+            if (!anchorContainsCursor()) {
+                dismiss();
+                return;
+            }
+
+            QScreen *screen = QGuiApplication::screenAt(QCursor::pos());
+            if (screen == nullptr) {
+                screen = QGuiApplication::primaryScreen();
+            }
+            if (screen == nullptr) {
+                return;
+            }
+
+            updateContents();
+            const QRect area = screen->availableGeometry();
+            resize(qMin(520, area.width()), qMin(300, area.height()));
+            // 紧贴悬停区域，避免移入浮窗时穿过下一行并切换到其他主机。
+            const QRect anchor = anchorRect();
+            QPoint position = m_anchor->mapToGlobal(QPoint(anchor.left(), anchor.bottom() + 1));
+            if (position.y() + height() > area.bottom() + 1) {
+                position.setY(m_anchor->mapToGlobal(anchor.topLeft()).y() - height());
+            }
+            position.setX(qBound(area.left(), position.x(), area.right() - width() + 1));
+            position.setY(qBound(area.top(), position.y(), area.bottom() - height() + 1));
+            move(position);
+            QToolTip::hideText();
+            show();
+        });
+
+        m_hideTimer.setSingleShot(true);
+        m_hideTimer.setInterval(200);
+        connect(&m_hideTimer, &QTimer::timeout, this, [this]() {
+            const QPoint cursor = QCursor::pos();
+            if ((isVisible() && rect().contains(mapFromGlobal(cursor)))
+                || anchorContainsCursor()) {
+                return;
+            }
+            dismiss();
+        });
+        parent->installEventFilter(this);
+    }
+
+    void watch(QProgressBar *bar, const QString &hostId)
+    {
+        bar->setProperty("copyPreviewHostId", hostId);
+        bar->installEventFilter(this);
+    }
+
+    void watchDetails(QTableWidget *table)
+    {
+        m_table = table;
+        table->viewport()->setMouseTracking(true);
+        table->viewport()->installEventFilter(this);
+        connect(table->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() { dismiss(); });
+        connect(table->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this]() { dismiss(); });
+        connect(table->horizontalHeader(), &QHeaderView::sectionResized, this, [this]() { dismiss(); });
+        connect(table->verticalHeader(), &QHeaderView::sectionResized, this, [this]() { dismiss(); });
+    }
+
+    void setRecentFiles(const QString &hostId, const QStringList &files, const QString &title)
+    {
+        m_files.insert(hostId, files);
+        m_titles.insert(hostId, title);
+        if (isVisible() && !m_detailsMode && m_hostId == hostId) {
+            if (files.isEmpty()) {
+                m_text->clear();
+            }
+            updateContents();
+        }
+    }
+
+    void setDetails(const QString &hostId, const QString &text, bool remember)
+    {
+        if (remember) {
+            m_details.insert(hostId, text);
+        }
+        if (isVisible() && m_detailsMode && m_hostId == hostId) {
+            updateContents();
+        }
+    }
+
+    void removeHost(const QString &hostId)
+    {
+        m_files.remove(hostId);
+        m_titles.remove(hostId);
+        m_details.remove(hostId);
+    }
+
+    void dismiss()
+    {
+        m_showTimer.stop();
+        m_hideTimer.stop();
+        hide();
+        m_anchor.clear();
+        m_hostId.clear();
+        m_detailIndex = QPersistentModelIndex();
+        m_detailsMode = false;
+        m_text->clear();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        // 显式绘制半透明底板，避免透明顶层窗口仅显示文字。
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QColor(163, 171, 181));
+        painter.setBrush(QColor(248, 250, 252, 245));
+        painter.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6);
+    }
+
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == parentWidget()) {
+            if (event->type() == QEvent::Hide || event->type() == QEvent::WindowDeactivate
+                || event->type() == QEvent::Move || event->type() == QEvent::Resize) {
+                dismiss();
+            }
+        } else if (m_table != nullptr && watched == m_table->viewport()) {
+            if (event->type() == QEvent::MouseMove || event->type() == QEvent::Enter
+                || event->type() == QEvent::ToolTip) {
+                const QModelIndex index = m_table->indexAt(m_table->viewport()->mapFromGlobal(QCursor::pos()));
+                if (index.isValid() && index.column() == 6 && m_table->item(index.row(), 0) != nullptr) {
+                    beginPreview(m_table->viewport(), m_table->item(index.row(), 0)->data(Qt::UserRole).toString(), index);
+                    if (event->type() == QEvent::ToolTip) {
+                        return true;
+                    }
+                } else if (m_detailsMode) {
+                    m_showTimer.stop();
+                    m_hideTimer.start();
+                }
+            } else if (event->type() == QEvent::Leave && m_detailsMode) {
+                m_showTimer.stop();
+                m_hideTimer.start();
+            } else if (event->type() == QEvent::Hide || event->type() == QEvent::Resize) {
+                dismiss();
+            }
+        } else if (auto *bar = qobject_cast<QProgressBar *>(watched)) {
+            if (event->type() == QEvent::Enter) {
+                beginPreview(bar, bar->property("copyPreviewHostId").toString());
+            } else if (event->type() == QEvent::Leave && m_anchor == bar) {
+                m_showTimer.stop();
+                m_hideTimer.start();
+            }
+        }
+        return QFrame::eventFilter(watched, event);
+    }
+
+    bool event(QEvent *event) override
+    {
+        if (event->type() == QEvent::Enter) {
+            m_hideTimer.stop();
+        } else if (event->type() == QEvent::Leave) {
+            m_hideTimer.start();
+        }
+        return QFrame::event(event);
+    }
+
+private:
+    void beginPreview(QWidget *anchor, const QString &hostId, const QModelIndex &detailIndex = QModelIndex())
+    {
+        m_hideTimer.stop();
+        if (m_anchor != anchor || m_hostId != hostId || m_detailIndex != detailIndex) {
+            m_showTimer.stop();
+            hide();
+            m_text->clear();
+            m_anchor = anchor;
+            m_hostId = hostId;
+            m_detailIndex = detailIndex;
+            m_detailsMode = detailIndex.isValid();
+        }
+        if (!isVisible() && !m_showTimer.isActive()) {
+            m_showTimer.start();
+        }
+    }
+
+    QRect anchorRect() const
+    {
+        if (m_anchor == nullptr) {
+            return QRect();
+        }
+        return m_detailsMode
+            ? (m_table != nullptr && m_detailIndex.isValid() ? m_table->visualRect(m_detailIndex) : QRect())
+            : m_anchor->rect();
+    }
+
+    bool anchorContainsCursor() const
+    {
+        if (m_anchor == nullptr || !m_anchor->isVisible() || !m_anchor->isEnabled()) {
+            return false;
+        }
+        const QPoint position = m_anchor->mapFromGlobal(QCursor::pos());
+        if (!anchorRect().contains(position)) {
+            return false;
+        }
+        return !m_detailsMode || (m_table != nullptr && m_table->indexAt(position) == m_detailIndex);
+    }
+
+    void updateContents()
+    {
+        if (m_anchor == nullptr) {
+            return;
+        }
+        QString text;
+        if (m_detailsMode) {
+            m_title->setText("同步详情");
+            const QTableWidgetItem *item = m_table != nullptr && m_detailIndex.isValid()
+                ? m_table->item(m_detailIndex.row(), 6) : nullptr;
+            text = m_details.value(m_hostId, item != nullptr ? item->toolTip() : QString());
+        } else {
+            const QStringList files = m_files.value(m_hostId);
+            m_title->setText(m_titles.value(m_hostId, "本轮拷贝预览"));
+            text = files.isEmpty()
+                ? (m_titles.contains(m_hostId) ? QString("本轮未产生文件处理记录") : QString("暂无文件记录"))
+                : files.join("\n\n");
+        }
+        if (m_text->toPlainText() == text) {
+            return;
+        }
+        // 阅读旧记录时保持滚动位置，避免批量更新把视图跳回顶部。
+        const int scroll = m_text->verticalScrollBar()->value();
+        m_text->setPlainText(text);
+        m_text->verticalScrollBar()->setValue(scroll);
+    }
+
+    QLabel *m_title = nullptr;
+    QPlainTextEdit *m_text = nullptr;
+    QPointer<QWidget> m_anchor;
+    QPointer<QTableWidget> m_table;
+    QPersistentModelIndex m_detailIndex;
+    QString m_hostId;
+    bool m_detailsMode = false;
+    QHash<QString, QStringList> m_files;
+    QHash<QString, QString> m_titles;
+    QHash<QString, QString> m_details;
+    QTimer m_showTimer;
+    QTimer m_hideTimer;
+};
 
 namespace
 {
@@ -126,6 +403,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_configPath(ConfigManager::defaultConfigPath())
 {
     setupUi();
+    m_copyPreview = new RecentCopyPreview(this);
+    m_copyPreview->watchDetails(m_hostTable);
     loadConfiguration();
 
     m_pollTimer = new QTimer(this);
@@ -723,6 +1002,7 @@ void MainWindow::refreshTypeList()
 
 void MainWindow::refreshHostTable()
 {
+    m_copyPreview->dismiss();
     m_isRefreshingTable = true;
     m_rowWidgets.clear();
     m_hostTable->setRowCount(m_config.hosts.size());
@@ -753,6 +1033,7 @@ void MainWindow::refreshHostTable()
         progressBar->setRange(0, 100);
         progressBar->setValue(0);
         progressBar->setFormat("%p%");
+        m_copyPreview->watch(progressBar, host.id);
         m_hostTable->setCellWidget(row, 4, progressBar);
 
         RowWidgets widgets;
@@ -888,6 +1169,7 @@ void MainWindow::removeSelectedHost()
     }
 
     m_syncContextRevisions.remove(m_config.hosts.at(row).id);
+    m_copyPreview->removeHost(m_config.hosts.at(row).id);
     m_config.hosts.removeAt(row);
     refreshHostTable();
     clearHostEditor();
@@ -1144,6 +1426,7 @@ void MainWindow::handleWorkerProgress(const QString &hostId, int percent, const 
             if (m_hostTable->item(row, 6) != nullptr) {
                 m_hostTable->item(row, 6)->setText(detail);
                 m_hostTable->item(row, 6)->setToolTip(detail);
+                m_copyPreview->setDetails(hostId, detail, false);
             }
             break;
         }
@@ -1254,12 +1537,17 @@ void MainWindow::updateHostRow(int row,
         m_hostTable->item(row, 5)->setText(statusText);
         m_hostTable->item(row, 5)->setToolTip(statusText);
     }
+    const QString hostId = m_config.hosts.value(row).id;
     if (m_hostTable->item(row, 6) != nullptr) {
         m_hostTable->item(row, 6)->setText(detail);
-        m_hostTable->item(row, 6)->setToolTip(detailTooltip.isEmpty() ? detail : detailTooltip);
+        const QString tooltip = detailTooltip.isEmpty() ? detail : detailTooltip;
+        m_hostTable->item(row, 6)->setToolTip(tooltip);
+        // 扫描和复制中的短提示不覆盖最近一次完整检查结果。
+        const bool remember = state != SyncWorker::Checking && state != SyncWorker::Syncing
+            && state != SyncWorker::Stopping;
+        m_copyPreview->setDetails(hostId, tooltip, remember);
     }
 
-    const QString hostId = m_config.hosts.value(row).id;
     RowWidgets widgets = m_rowWidgets.value(hostId);
     // 检查阶段保留上次同步进度，避免周期检查造成进度条闪动。
     if (widgets.progressBar != nullptr && state != SyncWorker::Checking) {
@@ -1421,6 +1709,11 @@ void MainWindow::startOperations(bool performCopy)
 
         connect(thread, &QThread::started, worker, &SyncWorker::process);
         connect(worker, &SyncWorker::progressChanged, this, &MainWindow::handleWorkerProgress);
+        connect(worker, &SyncWorker::recentFilesChanged, this, [this](const QString &hostId, const QStringList &files, const QString &title) {
+            if (!m_isClosing) {
+                m_copyPreview->setRecentFiles(hostId, files, title);
+            }
+        });
         connect(worker, &SyncWorker::stateChanged, this, &MainWindow::handleWorkerState);
         const quint64 revision = m_syncContextRevisions.value(host.id);
         connect(worker, &SyncWorker::copySucceeded, this, [this, revision](const QString &hostId, const QDateTime &completedUtc) {

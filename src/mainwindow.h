@@ -32,6 +32,7 @@ class QTimer;
 QT_END_NAMESPACE
 
 class SyncWorker;
+class RecentCopyPreview;
 
 class MainWindow : public QMainWindow
 {
@@ -141,6 +142,7 @@ private:
 
     QTableWidget *m_hostTable = nullptr;
     QTimer *m_pollTimer = nullptr;
+    RecentCopyPreview *m_copyPreview = nullptr;
 
     QHash<QString, RowWidgets> m_rowWidgets;
     QHash<QString, QThread *> m_runningThreads;
