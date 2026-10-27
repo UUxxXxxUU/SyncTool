@@ -48,6 +48,7 @@ AppConfig ConfigManager::load(const QString &filePath)
     config.releaseDir = root.value("releaseDir").toString().trimmed();
     config.autoSync = root.value("autoSync").toBool(true);
     config.startWithSystem = root.value("startWithSystem").toBool(false);
+    config.checkUpdatesOnStartup = root.value("checkUpdatesOnStartup").toBool(false);
     config.scanIntervalSeconds = qMax(1, root.value("scanIntervalSeconds").toInt(5));
 
     const QJsonArray historyArray = root.value("releaseDirHistory").toArray();
@@ -121,6 +122,7 @@ bool ConfigManager::save(const QString &filePath, const AppConfig &config, QStri
     root.insert("releaseDir", config.releaseDir);
     root.insert("autoSync", config.autoSync);
     root.insert("startWithSystem", config.startWithSystem);
+    root.insert("checkUpdatesOnStartup", config.checkUpdatesOnStartup);
     root.insert("scanIntervalSeconds", qMax(1, config.scanIntervalSeconds));
 
     QJsonArray historyArray;

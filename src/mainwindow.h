@@ -8,19 +8,23 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QMainWindow>
+#include <QPointer>
 #include <QSet>
 #include <QSystemTrayIcon>
+#include <QUrl>
 
 QT_BEGIN_NAMESPACE
 class QAction;
 class QCheckBox;
 class QCloseEvent;
 class QComboBox;
+class QEvent;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QMenu;
 class QNetworkAccessManager;
+class QNetworkReply;
 class QPoint;
 class QProgressBar;
 class QPushButton;
@@ -29,6 +33,7 @@ class QTableWidget;
 class QTableWidgetItem;
 class QThread;
 class QTimer;
+class QVariantAnimation;
 QT_END_NAMESPACE
 
 class SyncWorker;
@@ -43,6 +48,7 @@ public:
     ~MainWindow() override;
 
 protected:
+    bool event(QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 
 private slots:
@@ -83,6 +89,12 @@ private:
     };
 
     void setupUi();
+    void startUpdateCheck(bool interactive);
+    void requestUpdateInfo(bool useRawFallback);
+    void finishUpdateCheck(const QString &errorMessage = QString());
+    void showAvailableUpdate();
+    void updateCheckButton();
+    void stopUpdateChecks();
     void loadConfiguration();
     void applyConfigToUi();
     void collectUiToConfig();
@@ -130,9 +142,20 @@ private:
     QLineEdit *m_newTypeEdit = nullptr;
     QCheckBox *m_autoSyncCheck = nullptr;
     QCheckBox *m_startWithSystemCheck = nullptr;
+    QCheckBox *m_checkUpdatesOnStartupCheck = nullptr;
     QSpinBox *m_intervalSpin = nullptr;
     QPushButton *m_checkUpdatesButton = nullptr;
     QNetworkAccessManager *m_updateNetworkManager = nullptr;
+    QPointer<QNetworkReply> m_updateReply;
+    QTimer *m_updateCheckTimer = nullptr;
+    QVariantAnimation *m_updatePulse = nullptr;
+    bool m_updateCheckInProgress = false;
+    bool m_updateCheckInteractive = false;
+    bool m_updateDialogOpen = false;
+    QString m_availableUpdateVersion;
+    QString m_availableUpdateNotes;
+    QUrl m_availableUpdateUrl;
+    QString m_dismissedUpdateVersion;
 
     QCheckBox *m_hostEnabledCheck = nullptr;
     QLineEdit *m_hostNameEdit = nullptr;
