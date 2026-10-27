@@ -66,6 +66,7 @@
 #include <QToolTip>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QVariantAnimation>
 #include <QVersionNumber>
 #include <QUuid>
 #include <qdatetime.h>
@@ -382,7 +383,10 @@ QString sharePathTooltip(const QString &sharePath)
 }
 
 static const int kMaxReleaseDirHistory = 20;
+static const int kUpdateCheckIntervalMs = 2 * 60 * 60 * 1000;
+static const char *kUpdateApiUrl = "https://api.github.com/repos/UUxxXxxUU/SyncTool/contents/update.json?ref=master";
 static const char *kUpdateInfoUrl = "https://raw.githubusercontent.com/UUxxXxxUU/SyncTool/master/update.json";
+static const char *kUpdateButtonStyle = "QPushButton { background-color: %1; color: #17324d; border: 1px solid #72a9df; border-radius: 3px; padding: 4px 10px; }";
 #ifdef Q_OS_WIN
 static const char *kAutoStartRunKey = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const char *kAutoStartValueName = "RemoteReleaseSync";
@@ -406,6 +410,18 @@ MainWindow::MainWindow(QWidget *parent)
     m_copyPreview = new RecentCopyPreview(this);
     m_copyPreview->watchDetails(m_hostTable);
     loadConfiguration();
+
+    m_updateCheckTimer = new QTimer(this);
+    m_updateCheckTimer->setTimerType(Qt::PreciseTimer);
+    connect(m_updateCheckTimer, &QTimer::timeout, this, [this]() {
+        startUpdateCheck(false);
+    });
+    m_updateCheckTimer->start(kUpdateCheckIntervalMs);
+    if (m_config.checkUpdatesOnStartup) {
+        QTimer::singleShot(3000, this, [this]() {
+            startUpdateCheck(false);
+        });
+    }
 
     m_pollTimer = new QTimer(this);
     connect(m_pollTimer, &QTimer::timeout, this, &MainWindow::pollForChanges);
@@ -448,6 +464,7 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     m_isClosing = true;
+    stopUpdateChecks();
     requestWorkersToStop();
 
     for (auto it = m_runningThreads.constBegin(); it != m_runningThreads.constEnd(); ++it) {
@@ -457,6 +474,16 @@ MainWindow::~MainWindow()
             thread->wait();
         }
     }
+}
+
+bool MainWindow::event(QEvent *event)
+{
+    const bool handled = QMainWindow::event(event);
+    if (event->type() == QEvent::Show || event->type() == QEvent::Hide
+        || event->type() == QEvent::WindowStateChange) {
+        updateCheckButton();
+    }
+    return handled;
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -492,6 +519,7 @@ void MainWindow::realExit()
     }
 
     m_isClosing = true;
+    stopUpdateChecks();
     setEnabled(false);
 
     // 停止定时器，防止关闭过程中触发新的检查
@@ -707,9 +735,26 @@ void MainWindow::setupUi()
 
     setCentralWidget(central);
 
+    m_checkUpdatesOnStartupCheck = new QCheckBox("启动时检查更新", this);
+    m_checkUpdatesOnStartupCheck->setToolTip("下次启动时额外检查更新；每 2 小时的定时检查始终运行。");
+    statusBar()->addPermanentWidget(m_checkUpdatesOnStartupCheck);
     m_checkUpdatesButton = new QPushButton("检查更新", this);
     statusBar()->addPermanentWidget(m_checkUpdatesButton);
     connect(m_checkUpdatesButton, &QPushButton::clicked, this, &MainWindow::checkForUpdates);
+    connect(m_checkUpdatesOnStartupCheck, &QCheckBox::toggled, this, [this](bool) {
+        saveConfiguration();
+    });
+
+    m_updatePulse = new QVariantAnimation(this);
+    m_updatePulse->setDuration(2400);
+    m_updatePulse->setStartValue(QColor("#e8f3ff"));
+    m_updatePulse->setKeyValueAt(0.5, QColor("#96c9ff"));
+    m_updatePulse->setEndValue(QColor("#e8f3ff"));
+    m_updatePulse->setLoopCount(-1);
+    connect(m_updatePulse, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) {
+        m_checkUpdatesButton->setStyleSheet(QString::fromLatin1(kUpdateButtonStyle).arg(value.value<QColor>().name()));
+    });
+    updateCheckButton();
 
     connect(browseButton, &QPushButton::clicked, this, &MainWindow::browseReleaseDir);
     connect(addTypeButton, &QPushButton::clicked, this, &MainWindow::addFileType);
@@ -756,62 +801,110 @@ void MainWindow::setupUi()
 
 void MainWindow::checkForUpdates()
 {
-    if (m_isClosing || m_checkUpdatesButton == nullptr || !m_checkUpdatesButton->isEnabled()) {
+    if (m_isClosing) {
         return;
     }
+    if (!m_availableUpdateVersion.isEmpty()) {
+        showAvailableUpdate();
+        return;
+    }
+    startUpdateCheck(true);
+}
+
+void MainWindow::startUpdateCheck(bool interactive)
+{
+    if (m_isClosing) {
+        return;
+    }
+    if (m_updateCheckInProgress) {
+        m_updateCheckInteractive = m_updateCheckInteractive || interactive;
+        return;
+    }
+    m_updateCheckInProgress = true;
+    m_updateCheckInteractive = interactive;
+    updateCheckButton();
     if (!QSslSocket::supportsSsl()) {
-        QMessageBox::warning(this, "检查更新失败", "当前发布包缺少 HTTPS 支持，请补齐与 Qt 配套的 TLS 运行库。");
+        finishUpdateCheck("当前发布包缺少 HTTPS 支持，请补齐与 Qt 配套的 TLS 运行库。");
         return;
     }
 
     if (m_updateNetworkManager == nullptr) {
         m_updateNetworkManager = new QNetworkAccessManager(this);
     }
-    QNetworkRequest request(QUrl(QString::fromLatin1(kUpdateInfoUrl)));
+    requestUpdateInfo(false);
+}
+
+void MainWindow::requestUpdateInfo(bool useRawFallback)
+{
+    if (m_isClosing || !m_updateCheckInProgress || m_updateNetworkManager == nullptr) {
+        return;
+    }
+    QNetworkRequest request(QUrl(QString::fromLatin1(useRawFallback ? kUpdateInfoUrl : kUpdateApiUrl)));
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysNetwork);
-    request.setRawHeader("Accept", "*/*");
-    request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+    request.setRawHeader("Accept", useRawFallback ? "application/json" : "application/vnd.github+json");
+    request.setRawHeader("User-Agent", "RemoteReleaseSync");
     QNetworkReply *reply = m_updateNetworkManager->get(request);
-    m_checkUpdatesButton->setEnabled(false);
-    m_checkUpdatesButton->setText("正在检查...");
+    m_updateReply = reply;
 
     // Qt 5.12 没有请求超时接口，用单次定时器中止迟迟未完成的请求。
     QTimer *timeout = new QTimer(reply);
     timeout->setSingleShot(true);
+    timeout->setTimerType(Qt::PreciseTimer);
     connect(timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, timeout]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, timeout, useRawFallback]() {
         timeout->stop();
+        m_updateReply.clear();
         reply->deleteLater();
-        m_checkUpdatesButton->setEnabled(true);
-        m_checkUpdatesButton->setText("检查更新");
         if (m_isClosing) {
             return;
         }
+        const auto failCheck = [this, useRawFallback](const QString &reason) {
+            if (useRawFallback) {
+                finishUpdateCheck(reason);
+            } else {
+                requestUpdateInfo(true);
+            }
+        };
 
         if (reply->error() != QNetworkReply::NoError) {
+            const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             const QString reason = reply->error() == QNetworkReply::OperationCanceledError
                 ? QString("检查超时，请稍后重试。")
-                : QString("无法获取更新信息：%1").arg(reply->errorString());
-            QMessageBox::warning(this, "检查更新失败", reason);
+                : (statusCode > 0 ? QString("更新服务器返回 HTTP %1。").arg(statusCode)
+                                  : QString("无法获取更新信息，请检查网络后重试。\n%1").arg(reply->errorString()));
+            failCheck(reason);
             return;
         }
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (statusCode != 200) {
-            QMessageBox::warning(this, "检查更新失败", QString("更新服务器返回 HTTP %1。").arg(statusCode));
+            failCheck(QString("更新服务器返回 HTTP %1。").arg(statusCode));
             return;
         }
 
+        QByteArray payload = reply->readAll();
+        if (!useRawFallback) {
+            QJsonParseError apiParseError;
+            const QJsonDocument apiDocument = QJsonDocument::fromJson(payload, &apiParseError);
+            const QJsonObject apiInfo = apiDocument.object();
+            if (apiParseError.error != QJsonParseError::NoError || !apiDocument.isObject()
+                || apiInfo.value("encoding").toString() != "base64" || !apiInfo.value("content").isString()) {
+                failCheck("更新接口未返回有效的文件内容。");
+                return;
+            }
+            // Contents API 返回 Base64 文件内容，解码后与 raw 共用同一套清单校验。
+            payload = QByteArray::fromBase64(apiInfo.value("content").toString().toLatin1());
+        }
         QJsonParseError parseError;
-        const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
+        const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
         if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-            QMessageBox::warning(this, "检查更新失败", "更新信息不是有效的 JSON 对象。");
+            failCheck("更新信息不是有效的 JSON 对象。");
             return;
         }
         const QJsonObject info = document.object();
         if (!info.value("version").isString() || !info.value("notes").isString()
             || !info.value("downloadUrl").isString()) {
-            QMessageBox::warning(this, "检查更新失败", "更新信息缺少有效的 version、notes 或 downloadUrl 字段。");
+            failCheck("更新信息缺少有效的 version、notes 或 downloadUrl 字段。");
             return;
         }
 
@@ -822,34 +915,121 @@ void MainWindow::checkForUpdates()
         const QVersionNumber currentVersion = QVersionNumber::fromString(currentVersionText);
         if (!versionPattern.match(latestVersionText).hasMatch() || latestVersion.segmentCount() != 3
             || !versionPattern.match(currentVersionText).hasMatch() || currentVersion.segmentCount() != 3) {
-            QMessageBox::warning(this, "检查更新失败", "版本号必须为三段数字，例如 1.0.0。");
+            failCheck("版本号必须为三段数字，例如 1.0.0。");
             return;
         }
         const QUrl downloadUrl(info.value("downloadUrl").toString().trimmed(), QUrl::StrictMode);
         if (!downloadUrl.isValid() || downloadUrl.scheme() != "https" || downloadUrl.host().isEmpty()) {
-            QMessageBox::warning(this, "检查更新失败", "更新信息中的下载地址必须为有效的 HTTPS 地址。");
+            failCheck("更新信息中的下载地址必须为有效的 HTTPS 地址。");
             return;
         }
-        if (QVersionNumber::compare(latestVersion, currentVersion) <= 0) {
-            QMessageBox::information(this, "检查更新", QString("当前已是最新版本（%1）。").arg(currentVersionText));
-            return;
+        // 仅完整校验成功的结果可以替换缓存，断网或清单异常时保留已发现的新版本。
+        if (QVersionNumber::compare(latestVersion, currentVersion) > 0) {
+            m_availableUpdateVersion = latestVersionText;
+            m_availableUpdateNotes = info.value("notes").toString().trimmed();
+            m_availableUpdateUrl = downloadUrl;
+        } else {
+            m_availableUpdateVersion.clear();
+            m_availableUpdateNotes.clear();
+            m_availableUpdateUrl = QUrl();
         }
-
-        QMessageBox updateDialog(this);
-        updateDialog.setWindowTitle("发现新版本");
-        updateDialog.setIcon(QMessageBox::Information);
-        updateDialog.setTextFormat(Qt::PlainText);
-        updateDialog.setText(QString("当前版本：%1\n最新版本：%2").arg(currentVersionText, latestVersionText));
-        const QString notes = info.value("notes").toString().trimmed();
-        updateDialog.setInformativeText(notes.isEmpty() ? QString("暂无更新说明。") : notes);
-        QPushButton *downloadButton = updateDialog.addButton("前往下载", QMessageBox::AcceptRole);
-        updateDialog.addButton("稍后", QMessageBox::RejectRole);
-        updateDialog.exec();
-        if (updateDialog.clickedButton() == downloadButton && !QDesktopServices::openUrl(downloadUrl)) {
-            QMessageBox::warning(this, "打开下载页面失败", QString("请在浏览器中访问：\n%1").arg(downloadUrl.toString()));
-        }
+        finishUpdateCheck();
     });
-    timeout->start(15000);
+    timeout->start(10000);
+}
+
+void MainWindow::finishUpdateCheck(const QString &errorMessage)
+{
+    const bool interactive = m_updateCheckInteractive;
+    m_updateCheckInProgress = false;
+    m_updateCheckInteractive = false;
+    updateCheckButton();
+    if (m_isClosing || !interactive) {
+        return;
+    }
+    if (!errorMessage.isEmpty()) {
+        QMessageBox::warning(this, "检查更新失败", errorMessage);
+    } else if (m_availableUpdateVersion.isEmpty()) {
+        QMessageBox::information(this, "检查更新",
+                                 QString("当前已是最新版本（%1）。").arg(QCoreApplication::applicationVersion()));
+    } else {
+        showAvailableUpdate();
+    }
+}
+
+void MainWindow::showAvailableUpdate()
+{
+    if (m_isClosing || m_updateDialogOpen || m_availableUpdateVersion.isEmpty()) {
+        return;
+    }
+    // 对话框会运行嵌套事件循环，保留本次展示的版本和地址，避免后台结果替换下载目标。
+    const QString version = m_availableUpdateVersion;
+    const QUrl downloadUrl = m_availableUpdateUrl;
+    m_updateDialogOpen = true;
+    updateCheckButton();
+    QMessageBox updateDialog(this);
+    updateDialog.setWindowTitle("发现新版本");
+    updateDialog.setIcon(QMessageBox::Information);
+    updateDialog.setTextFormat(Qt::PlainText);
+    updateDialog.setText(QString("当前版本：%1\n最新版本：%2").arg(QCoreApplication::applicationVersion(), version));
+    updateDialog.setInformativeText(m_availableUpdateNotes.isEmpty() ? QString("暂无更新说明。") : m_availableUpdateNotes);
+    QPushButton *downloadButton = updateDialog.addButton("前往下载", QMessageBox::AcceptRole);
+    updateDialog.addButton("稍后", QMessageBox::RejectRole);
+    updateDialog.exec();
+    m_updateDialogOpen = false;
+    m_dismissedUpdateVersion = version;
+    updateCheckButton();
+    if (!m_isClosing && updateDialog.clickedButton() == downloadButton && !QDesktopServices::openUrl(downloadUrl)) {
+        QMessageBox::warning(this, "打开下载页面失败", QString("请在浏览器中访问：\n%1").arg(downloadUrl.toString()));
+    }
+}
+
+void MainWindow::updateCheckButton()
+{
+    if (m_checkUpdatesButton == nullptr || m_updatePulse == nullptr) {
+        return;
+    }
+    const bool hasUpdate = !m_availableUpdateVersion.isEmpty();
+    m_checkUpdatesButton->setEnabled(!m_isClosing && (!m_updateCheckInProgress || hasUpdate));
+    m_checkUpdatesButton->setText(hasUpdate ? "发现新版本" : (m_updateCheckInProgress ? "正在检查..." : "检查更新"));
+    m_checkUpdatesButton->setToolTip(hasUpdate
+        ? QString("发现版本 %1，点击查看更新说明并选择是否下载。").arg(m_availableUpdateVersion)
+        : QString("手动检查软件更新；程序每 2 小时自动检查一次。"));
+
+    const bool dismissed = !m_dismissedUpdateVersion.isEmpty()
+        && QVersionNumber::compare(QVersionNumber::fromString(m_availableUpdateVersion),
+                                   QVersionNumber::fromString(m_dismissedUpdateVersion)) <= 0;
+    if (!hasUpdate || dismissed || m_isClosing || m_updateDialogOpen) {
+        m_updatePulse->stop();
+        m_checkUpdatesButton->setStyleSheet(hasUpdate
+            ? QString::fromLatin1(kUpdateButtonStyle).arg("#e8f3ff") : QString());
+        return;
+    }
+    if (isVisible() && !isMinimized()) {
+        if (m_updatePulse->state() == QAbstractAnimation::Paused) {
+            m_updatePulse->resume();
+        } else if (m_updatePulse->state() == QAbstractAnimation::Stopped) {
+            m_updatePulse->start();
+        }
+    } else if (m_updatePulse->state() == QAbstractAnimation::Running) {
+        m_updatePulse->pause();
+    }
+}
+
+void MainWindow::stopUpdateChecks()
+{
+    if (m_updateCheckTimer != nullptr) {
+        m_updateCheckTimer->stop();
+    }
+    if (m_updatePulse != nullptr) {
+        m_updatePulse->stop();
+    }
+    m_updateCheckInProgress = false;
+    m_updateCheckInteractive = false;
+    if (m_updateReply != nullptr) {
+        m_updateReply->abort();
+        m_updateReply.clear();
+    }
 }
 
 void MainWindow::onReleaseDirEditFinished()
@@ -927,6 +1107,10 @@ void MainWindow::applyConfigToUi()
         m_startWithSystemCheck->setChecked(m_config.startWithSystem);
     }
     {
+        QSignalBlocker blocker(m_checkUpdatesOnStartupCheck);
+        m_checkUpdatesOnStartupCheck->setChecked(m_config.checkUpdatesOnStartup);
+    }
+    {
         QSignalBlocker blocker(m_intervalSpin);
         m_intervalSpin->setValue(qMax(1, m_config.scanIntervalSeconds));
     }
@@ -954,6 +1138,7 @@ void MainWindow::collectUiToConfig()
     m_config.releaseDir = normalizePathForUi(m_releaseDirEdit->currentText());
     m_config.autoSync = m_autoSyncCheck->isChecked();
     m_config.startWithSystem = m_startWithSystemCheck->isChecked();
+    m_config.checkUpdatesOnStartup = m_checkUpdatesOnStartupCheck->isChecked();
     m_config.scanIntervalSeconds = m_intervalSpin->value();
 
     QStringList types;

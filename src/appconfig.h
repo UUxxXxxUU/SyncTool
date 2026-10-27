@@ -25,6 +25,7 @@ struct AppConfig
     QStringList selectedFileTypes;
     bool autoSync = true;
     bool startWithSystem = false;
+    bool checkUpdatesOnStartup = false;
     int scanIntervalSeconds = 5;
     QVector<HostEntry> hosts;
     QStringList releaseDirHistory;
