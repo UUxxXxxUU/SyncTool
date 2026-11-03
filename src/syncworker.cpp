@@ -7,6 +7,8 @@
 #include <QDirIterator>
 #include <QFileInfo>
 #include <QHash>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSet>
@@ -238,7 +240,8 @@ int recommendedRobocopyThreads(const QVector<PendingCopy> &pendingCopies)
         threadCount = cpuCount * 8;
     }
 
-    return qMin(pendingCount, qBound(8, threadCount, 128));
+    // 线程过多会占满到同一主机的 SMB 通道，导致资源管理器浏览该共享时长时间无响应。
+    return qMin(pendingCount, qBound(8, threadCount, 32));
 }
 
 QStringList robocopyPatterns(const QSet<QString> &types)
@@ -360,76 +363,110 @@ QString describeRobocopyFailure(int exitCode, const QString &output)
     return QString("robocopy 同步失败，退出码 %1").arg(exitCode);
 }
 
-class ShareConnection
+// 本程序创建的共享连接（键为忽略大小写的共享根路径）。连接在程序运行期间保持，
+// 不在每轮检查后断开：资源管理器与本程序共用同一登录会话的 SMB 连接，断开会让已打开的共享窗口失效。
+QMutex &shareConnectionMutex()
 {
-public:
-    explicit ShareConnection(const QString &fullPath)
-        : m_rootPath(uncShareRoot(fullPath))
-    {
+    static QMutex mutex;
+    return mutex;
+}
+
+QHash<QString, QString> &createdShareConnections()
+{
+    static QHash<QString, QString> connections;
+    return connections;
+}
+
+bool isCreatedShareConnection(const QString &rootPath)
+{
+    QMutexLocker locker(&shareConnectionMutex());
+    return createdShareConnections().contains(rootPath.toCaseFolded());
+}
+
+void rememberCreatedShareConnection(const QString &rootPath)
+{
+    QMutexLocker locker(&shareConnectionMutex());
+    createdShareConnections().insert(rootPath.toCaseFolded(), rootPath);
+}
+
+void forgetCreatedShareConnection(const QString &rootPath)
+{
+    QMutexLocker locker(&shareConnectionMutex());
+    createdShareConnections().remove(rootPath.toCaseFolded());
+}
+
+bool isShareAccessible(const QString &rootPath)
+{
+    const std::wstring path = (rootPath + "\\").toStdWString();
+    return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool connectShare(const QString &fullPath, const QString &username, const QString &password, QString *error)
+{
+    const QString rootPath = uncShareRoot(fullPath);
+    if (!rootPath.startsWith("\\\\")) {
+        return true;
     }
 
-    bool connect(const QString &username, const QString &password, QString *error)
-    {
-        if (!m_rootPath.startsWith("\\\\")) {
+    if (isCreatedShareConnection(rootPath) && isShareAccessible(rootPath)) {
+        return true;
+    }
+
+    std::wstring remote = rootPath.toStdWString();
+    NETRESOURCEW resource;
+    ZeroMemory(&resource, sizeof(resource));
+    resource.dwType = RESOURCETYPE_DISK;
+    resource.lpRemoteName = remote.data();
+
+    const std::wstring userValue = username.toStdWString();
+    const std::wstring passValue = password.toStdWString();
+
+    auto tryConnect = [&]() -> DWORD {
+        return WNetAddConnection2W(&resource,
+                                   password.isEmpty() ? L"" : passValue.c_str(),
+                                   username.isEmpty() ? nullptr : userValue.c_str(),
+                                   0);
+    };
+
+    DWORD result = tryConnect();
+    if (result == NO_ERROR) {
+        rememberCreatedShareConnection(rootPath);
+        return true;
+    }
+    if (result == ERROR_ALREADY_ASSIGNED || result == ERROR_DEVICE_ALREADY_REMEMBERED) {
+        return true;
+    }
+    if (result == ERROR_SESSION_CREDENTIAL_CONFLICT) {
+        // 当前会话已用其他账号连接该主机（通常是用户在资源管理器中打开的），不能断开它，直接复用。
+        if (isShareAccessible(rootPath)) {
             return true;
         }
-
-        std::wstring remote = m_rootPath.toStdWString();
-        NETRESOURCEW resource;
-        ZeroMemory(&resource, sizeof(resource));
-        resource.dwType = RESOURCETYPE_DISK;
-        resource.lpRemoteName = remote.data();
-
-        std::wstring userValue = username.toStdWString();
-        std::wstring passValue = password.toStdWString();
-
-        auto tryConnect = [&](const wchar_t *userPtr, const wchar_t *passPtr) -> DWORD {
-            return WNetAddConnection2W(&resource,
-                                       password.isEmpty() ? L"" : passPtr,
-                                       username.isEmpty() ? nullptr : userPtr,
-                                       0);
-        };
-
-        DWORD result = tryConnect(userValue.c_str(), passValue.c_str());
-        if (result == NO_ERROR) {
-            m_created = true;
-            return true;
-        }
-        if (result == ERROR_ALREADY_ASSIGNED || result == ERROR_DEVICE_ALREADY_REMEMBERED) {
-            return true;
-        }
-        if (result == ERROR_SESSION_CREDENTIAL_CONFLICT) {
-            WNetCancelConnection2W(remote.c_str(), 0, TRUE);
-            result = tryConnect(userValue.c_str(), passValue.c_str());
+        // 只重建本程序自己创建的连接（例如账号已修改），且不强制关闭已打开的文件。
+        if (isCreatedShareConnection(rootPath)
+            && WNetCancelConnection2W(remote.c_str(), 0, FALSE) == NO_ERROR) {
+            forgetCreatedShareConnection(rootPath);
+            result = tryConnect();
             if (result == NO_ERROR) {
-                m_created = true;
+                rememberCreatedShareConnection(rootPath);
                 return true;
             }
         }
+    }
 
-        if (error != nullptr) {
+    if (error != nullptr) {
+        if (result == ERROR_SESSION_CREDENTIAL_CONFLICT) {
+            *error = QString("共享连接失败：当前 Windows 登录已用其他账号连接该主机，且无权访问此共享。"
+                             "请在资源管理器中改用相同账号，或断开现有连接后重试（错误码 %1）")
+                         .arg(result);
+        } else {
             const QString reason = describeWindowsError(result);
             *error = reason.isEmpty()
                 ? QString("共享连接失败，错误码 %1").arg(result)
                 : QString("共享连接失败：%1（错误码 %2）").arg(reason).arg(result);
         }
-        return false;
     }
-
-    ~ShareConnection()
-    {
-        if (!m_created) {
-            return;
-        }
-
-        const std::wstring remote = m_rootPath.toStdWString();
-        WNetCancelConnection2W(remote.c_str(), 0, TRUE);
-    }
-
-private:
-    QString m_rootPath;
-    bool m_created = false;
-};
+    return false;
+}
 
 bool runRobocopy(SyncWorker *worker,
                  const QString &localRoot,
@@ -702,6 +739,21 @@ SyncWorker::SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes
 {
 }
 
+void SyncWorker::releaseShareConnections()
+{
+#ifdef Q_OS_WIN
+    QHash<QString, QString> connections;
+    {
+        QMutexLocker locker(&shareConnectionMutex());
+        connections.swap(createdShareConnections());
+    }
+    for (const QString &rootPath : connections) {
+        const std::wstring remote = rootPath.toStdWString();
+        WNetCancelConnection2W(remote.c_str(), 0, FALSE);
+    }
+#endif
+}
+
 void SyncWorker::cancel()
 {
     m_cancelled->store(true);
@@ -810,9 +862,8 @@ void SyncWorker::process()
               QString("%1：正在连接共享目录").arg(displayName));
 
 #ifdef Q_OS_WIN
-    ShareConnection connection(remoteRoot);
     QString connectionError;
-    if (!connection.connect(m_host.username, m_host.password, &connectionError)) {
+    if (!connectShare(remoteRoot, m_host.username, m_host.password, &connectionError)) {
         finishWithError(Disconnected, "断线", QString("%1：%2").arg(displayName, connectionError));
         return;
     }

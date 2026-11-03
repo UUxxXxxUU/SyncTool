@@ -474,6 +474,7 @@ MainWindow::~MainWindow()
             thread->wait();
         }
     }
+    SyncWorker::releaseShareConnections();
 }
 
 bool MainWindow::event(QEvent *event)
