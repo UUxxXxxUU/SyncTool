@@ -51,6 +51,7 @@ public:
     void emitRecentFiles(const QStringList &files, const QString &title);
     bool isCancelled() const;
     std::shared_ptr<std::atomic<bool>> cancellationFlag() const;
+    static void releaseShareConnections();
 
 public slots:
     void process();
