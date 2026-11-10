@@ -5,20 +5,26 @@
 #include <atomic>
 #include <memory>
 #include <QColor>
+#include <QCryptographicHash>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QMainWindow>
 #include <QPointer>
 #include <QSet>
 #include <QSystemTrayIcon>
+#include <QStringList>
 #include <QUrl>
+#include <QVector>
 
 QT_BEGIN_NAMESPACE
 class QAction;
 class QCheckBox;
 class QCloseEvent;
 class QComboBox;
+class QDialog;
 class QEvent;
+class QFile;
+class QLabel;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
@@ -38,6 +44,13 @@ QT_END_NAMESPACE
 
 class SyncWorker;
 class RecentCopyPreview;
+
+// 更新说明中的一个分类，例如“修复问题”“新增功能”。
+struct UpdateNoteSection
+{
+    QString title;
+    QStringList items;
+};
 
 class MainWindow : public QMainWindow
 {
@@ -95,6 +108,20 @@ private:
     void showAvailableUpdate();
     void updateCheckButton();
     void stopUpdateChecks();
+    void openUpdateUrl(const QUrl &url);
+    void showUpdateHistoryLink(const QString &message);
+    void startInstallerDownload(bool interactive);
+    void requestInstallerChecksum();
+    void requestInstallerFile(const QString &expectedSha256);
+    bool appendInstallerChunk(QNetworkReply *reply);
+    void failInstallerDownload(const QString &errorMessage);
+    void abortInstallerDownload();
+    void finishInstallerDownload();
+    void setUpdateDialogStatus(const QString &text, int percent = -1);
+    bool isReadyInstallerCurrent() const;
+    bool installSilentUpdateIfIdle();
+    bool launchInstaller(bool silent, QString *errorMessage);
+    void installUpdateNow();
     void loadConfiguration();
     void applyConfigToUi();
     void collectUiToConfig();
@@ -143,6 +170,7 @@ private:
     QCheckBox *m_autoSyncCheck = nullptr;
     QCheckBox *m_startWithSystemCheck = nullptr;
     QCheckBox *m_checkUpdatesOnStartupCheck = nullptr;
+    QCheckBox *m_silentUpdateCheck = nullptr;
     QSpinBox *m_intervalSpin = nullptr;
     QPushButton *m_checkUpdatesButton = nullptr;
     QNetworkAccessManager *m_updateNetworkManager = nullptr;
@@ -155,7 +183,27 @@ private:
     QString m_availableUpdateVersion;
     QString m_availableUpdateNotes;
     QUrl m_availableUpdateUrl;
+    QUrl m_availableReleaseUrl;
+    QUrl m_availableInstallerUrl;
+    QVector<UpdateNoteSection> m_availableUpdateSections;
     QString m_dismissedUpdateVersion;
+
+    // 安装包下载状态：先下载 .sha256 校验文件，再下载安装包并边下边计算摘要。
+    QPointer<QNetworkReply> m_installerReply;
+    QFile *m_installerFile = nullptr;
+    std::unique_ptr<QCryptographicHash> m_installerHash;
+    QString m_installerDownloadVersion;
+    QUrl m_installerDownloadUrl;
+    bool m_installerDownloadInteractive = false;
+    bool m_installAfterDownload = false;
+    QString m_readyInstallerPath;
+    QString m_readyInstallerVersion;
+    bool m_isInstallingUpdate = false;
+    QString m_silentInstallFailedVersion;
+    QPointer<QDialog> m_updateDialog;
+    QPointer<QProgressBar> m_updateDialogProgress;
+    QPointer<QLabel> m_updateDialogStatus;
+    QPointer<QPushButton> m_updateDialogInstallButton;
 
     QCheckBox *m_hostEnabledCheck = nullptr;
     QLineEdit *m_hostNameEdit = nullptr;

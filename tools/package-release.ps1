@@ -5,6 +5,7 @@ param(
     [string]$OpenSslDir,
     [string]$VisualStudioDir,
     [string]$QtMsBuildDir,
+    [string]$InnoSetupDir,
     [switch]$Upload
 )
 
@@ -92,6 +93,32 @@ if (!$appVersion.Success -or !$cmakeVersion.Success -or
     throw 'Versions in main.cpp, CMakeLists.txt and update.json must match.'
 }
 $tag = "v$version"
+$packageName = "RemoteReleaseSync-$version-windows-x64"
+$installerName = "$packageName-setup.exe"
+$expectedInstallerUrl = "https://github.com/$repository/releases/download/$tag/$installerName"
+if ($manifest.PSObject.Properties.Name -contains 'installerUrl' -and $manifest.installerUrl -ne $expectedInstallerUrl) {
+    throw "update.json installerUrl must be $expectedInstallerUrl"
+}
+
+# The installer is required for in-app updates, so locate Inno Setup before spending time on the build.
+$installerScript = Join-Path $PSScriptRoot 'RemoteReleaseSync.iss'
+Assert-File $installerScript
+if ([string]::IsNullOrWhiteSpace($InnoSetupDir)) {
+    $isccCommand = Get-Command ISCC.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($isccCommand) {
+        $isccPath = $isccCommand.Source
+    } else {
+        $isccPath = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
+        ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    }
+    if (!$isccPath) { throw 'Inno Setup 6.3 or later is required. Install it with: winget install JRSoftware.InnoSetup' }
+} else {
+    $isccPath = Join-Path (Resolve-Directory $InnoSetupDir) 'ISCC.exe'
+}
+Assert-File $isccPath
 
 if ([string]::IsNullOrWhiteSpace($QtDir)) {
     $qmakeCommand = Get-Command qmake.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -190,7 +217,6 @@ if ($Upload) {
     }
 }
 
-$packageName = "RemoteReleaseSync-$version-windows-x64"
 $runName = 'release-{0}-{1}-{2}' -f $version, (Get-Date -Format 'yyyyMMdd-HHmmss'), ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $runDir = Join-Path $projectRoot "artifacts\$runName"
 $buildDir = Join-Path $runDir 'build'
@@ -284,6 +310,16 @@ $checksum = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerI
 Write-Host "ZIP:    $zipPath"
 Write-Host "SHA256: $checksumPath"
 
+$installerPath = Join-Path $runDir $installerName
+$installerChecksumPath = "$installerPath.sha256"
+Write-Host 'Building installer with Inno Setup...'
+Invoke-Native $isccPath @('/Qp', "/DAppVersion=$version", "/DSourceDir=$stageDir", "/DOutputDir=$runDir", $installerScript) | Out-Host
+Assert-File $installerPath
+$installerChecksum = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+[System.IO.File]::WriteAllText($installerChecksumPath, "$installerChecksum *$installerName`n", [System.Text.Encoding]::ASCII)
+Write-Host "Setup:  $installerPath"
+Write-Host "SHA256: $installerChecksumPath"
+
 if ($Upload) {
     # Recheck after the build so edits or a changed remote branch cannot be published under the original commit.
     $status = @(Invoke-Native $gitPath @('-C', $projectRoot, 'status', '--porcelain'))
@@ -293,9 +329,16 @@ if ($Upload) {
         throw 'The source or GitHub master changed during packaging. Upload was cancelled; local artifacts are retained.'
     }
     $notesPath = Join-Path $runDir 'release-notes.md'
-    [System.IO.File]::WriteAllText($notesPath, $manifest.notes + "`n`nCommit: $commit`n", [System.Text.UTF8Encoding]::new($false))
+    $notesText = $manifest.notes + "`n"
+    if ($manifest.PSObject.Properties.Name -contains 'sections') {
+        foreach ($section in @($manifest.sections)) {
+            $notesText += "`n### $($section.title)`n`n"
+            foreach ($item in @($section.items)) { $notesText += "- $item`n" }
+        }
+    }
+    [System.IO.File]::WriteAllText($notesPath, $notesText + "`nCommit: $commit`n", [System.Text.UTF8Encoding]::new($false))
     Write-Host "Creating draft release $tag in $repository..."
-    Invoke-Native $ghPath @('release', 'create', $tag, $zipPath, $checksumPath, '--repo', $repository,
+    Invoke-Native $ghPath @('release', 'create', $tag, $zipPath, $checksumPath, $installerPath, $installerChecksumPath, '--repo', $repository,
         '--target', $commit, '--title', "RemoteReleaseSync $version", '--notes-file', $notesPath, '--draft') | Out-Host
     Write-Host 'Draft uploaded. Verify the package on a Windows machine without Qt before publishing it on GitHub.'
 }

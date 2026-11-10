@@ -48,7 +48,7 @@ RemoteReleaseSync.exe
 
 ### Windows 打包与草稿 Release 上传
 
-`tools/package-release.ps1` 使用现有 Visual Studio 项目编译 `Release|x64`，收集运行依赖，生成 ZIP 和 SHA256 校验文件；加 `-Upload` 后自动上传到 GitHub 草稿 Release。
+`tools/package-release.ps1` 使用现有 Visual Studio 项目编译 `Release|x64`，收集运行依赖，生成 ZIP 运行包、EXE 安装程序及各自的 SHA256 校验文件；加 `-Upload` 后自动上传到 GitHub 草稿 Release。
 
 准备环境：
 
@@ -56,6 +56,7 @@ RemoteReleaseSync.exe
 - Qt 5.12.3 的 `msvc2017_64` Kit，包含 `qmake.exe`、`windeployqt.exe`；脚本不更改依赖版本。
 - Visual Studio C++ 工具、现有项目使用的 v142 工具集、Windows SDK 10.0.26100.0，以及 Qt VS Tools 提供的 Qt/MSBuild。
 - 与当前 Qt 兼容的 OpenSSL 1.0.x x64 DLL：`libeay32.dll`、`ssleay32.dll`。文件名中的 `32` 不代表 DLL 是 32 位；脚本会检查 x64 架构。此 Qt Kit 使用 OpenSSL 1.0 接口，不能直接换成 OpenSSL 1.1 或 3；由使用者提供来源可信且依赖齐全的 DLL。
+- Inno Setup 6.3 或更高版本（`winget install JRSoftware.InnoSetup`），用于生成安装程序；脚本自动查找 `ISCC.exe`，也可用 `-InnoSetupDir` 指定目录。
 - 上传时还需 Git、GitHub CLI，以及对 `UUxxXxxUU/SyncTool` 的写入权限。
 
 从项目根目录打包，替换示例中的 OpenSSL 目录：
@@ -107,7 +108,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 
 5. 点击“刷新状态”可以只检查一致性，不执行复制。
 6. 点击“立即同步”会把勾选主机与所选类型执行同步。
 7. 打开“检测到本地文件变化后自动同步”后，程序会按扫描间隔自动检测本地变化并同步。
-8. 窗口标题显示当前软件版本。程序每 2 小时自动检查更新；右下角“启动时检查更新”默认关闭，勾选后会在下次启动 3 秒后额外检查一次。有新版时“检查更新”按钮显示呼吸提示，点击可查看更新说明并自行决定是否前往下载。
+8. 窗口标题显示当前软件版本。程序每 2 小时自动检查更新；右下角“启动时检查更新”默认关闭，勾选后会在下次启动 3 秒后额外检查一次。有新版时“检查更新”按钮显示呼吸提示，点击可查看分类更新说明，选择“更新”在程序内下载并安装新版本，也可前往发布页或下载历史版本。
+9. 右下角“无感更新”默认关闭。勾选后，发现新版本会在后台下载并校验安装包，在没有同步/检查任务运行、没有弹窗且主窗口不在前台时，自动安装到当前程序所在目录并重启程序（原来缩在托盘的仍保持在托盘）。
 
 ## 软件更新发布
 
@@ -120,17 +122,26 @@ https://api.github.com/repos/UUxxXxxUU/SyncTool/contents/update.json?ref=master
 https://raw.githubusercontent.com/UUxxXxxUU/SyncTool/master/update.json
 ```
 
-自动检查不弹窗；发现新版后，按钮显示新版标记并缓慢变换背景颜色，文字保持清晰。点击按钮可查看版本和更新说明，选择“前往下载”后打开下载页面。选择“稍后”会在本次运行期间停止同一版本的呼吸提示，保留新版标记；发现更高版本时再次提示。窗口隐藏时暂停动画，重新显示时恢复。
+自动检查不弹窗；发现新版后，按钮显示新版标记并缓慢变换背景颜色，文字保持清晰。点击按钮打开更新对话框：显示新版本号、“前往发布页”、按“修复问题 / 新增功能 / 优化改进”等分类折叠的更新说明、“查看更多”和“历史版本下载”链接、下载进度及“取消 / 更新”按钮。点击“更新”后程序下载安装包并校验 SHA256，随后退出并由安装程序更新当前程序所在目录，完成后自动重启。点击“取消”会在本次运行期间停止同一版本的呼吸提示，保留新版标记；发现更高版本时再次提示。窗口隐藏时暂停动画，重新显示时恢复。
 
-两个地址都失败后，自动检查静默等待下个 2 小时周期，不额外安排短间隔重试；手动检查失败显示中文原因。软件只检查版本信息，下载由用户自行决定。
+两个地址都失败后，自动检查静默等待下个 2 小时周期，不额外安排短间隔重试；手动检查失败显示中文原因。未开启“无感更新”时，软件只在用户点击“更新”后下载安装包。
 
-`update.json` 格式如下，三个字段均为字符串，版本号使用三段数字（例如 `1.10.0`）：
+安装程序和程序内更新都会安装到指定目录（程序内更新固定为当前 EXE 所在目录）：先删除该目录中旧版的程序文件、Qt DLL 和插件目录，保留 `sync_config.json`；若之前用安装程序装在其他目录，会静默卸载那一份。程序目录需要管理员权限才能写入时，无感更新不会执行，手动更新会弹出 UAC 提示。需要旧版本时，可通过更新对话框中的“历史版本下载”进入 [GitHub Releases](https://github.com/UUxxXxxUU/SyncTool/releases) 下载。
+
+`update.json` 格式如下，版本号使用三段数字（例如 `1.10.0`）。`version`、`notes`、`downloadUrl` 为必填字符串，旧版客户端只读取这三项；`downloadUrl` 填写发布列表页，用作历史版本下载入口。`releaseUrl`、`installerUrl`、`sections` 为 1.0.6 起支持的可选字段，缺省时分别使用 `v版本` 发布页和该版本的 `RemoteReleaseSync-版本-windows-x64-setup.exe` 下载地址；安装包同目录必须有同名 `.sha256` 文件，校验失败不会安装。
 
 ```json
 {
-  "version": "1.0.1",
-  "notes": "共享目录改为后台打开，增加 Ctrl 连续点击保护。",
-  "downloadUrl": "https://github.com/UUxxXxxUU/SyncTool/releases"
+  "version": "1.0.6",
+  "notes": "本次更新的简要说明。",
+  "downloadUrl": "https://github.com/UUxxXxxUU/SyncTool/releases",
+  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.0.6",
+  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.0.6/RemoteReleaseSync-1.0.6-windows-x64-setup.exe",
+  "sections": [
+    { "title": "修复问题", "items": ["修复说明一"] },
+    { "title": "新增功能", "items": ["新增说明一"] },
+    { "title": "优化改进", "items": ["优化说明一"] }
+  ]
 }
 ```
 
@@ -140,7 +151,7 @@ https://raw.githubusercontent.com/UUxxXxxUU/SyncTool/master/update.json
 2. 生成完整发布包，包含 EXE、Qt DLL、平台插件及与当前 Qt 配套的 HTTPS/TLS 运行库；新增功能需要 Qt Network 模块。不要打包个人 `sync_config.json`。
 3. 在 GitHub 仓库的 Releases 页面（`https://github.com/UUxxXxxUU/SyncTool/releases`）创建对应版本的发行版，填写说明并上传 ZIP；确认使用者可以访问下载页面。
 4. 发行包就绪后，将 `update.json` 的版本号、说明及 HTTPS 下载地址更新并推送到 GitHub 的 `master`。仅修改本地文件、Gitee 仓库或其他分支不会生效。
-5. 使用者下载后先通过托盘菜单“退出”关闭程序，再替换程序文件，保留自己的 `sync_config.json`。
+5. 1.0.6 及以后的版本可在程序内更新；更早的版本需要用户手动下载安装程序或 ZIP。使用 ZIP 时先通过托盘菜单“退出”关闭程序，再替换程序文件，保留自己的 `sync_config.json`。
 
 没有更新检测入口或仍使用 Gitee 更新地址的旧版，需要先手动安装一次使用 GitHub 更新地址的版本。网络失败、超时或版本信息格式错误不会被视为“当前已是最新版本”，也不会清除已经发现的新版信息；手动检查时会提示“检查更新失败”。
 

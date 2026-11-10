@@ -21,10 +21,12 @@
 #include <QStyle>
 #include <QCryptographicHash>
 #include <QDesktopServices>
+#include <QDialog>
 #include <QCursor>
 #include <QDir>
 #include <QDirIterator>
 #include <QEvent>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -32,6 +34,7 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -52,17 +55,20 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScreen>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSslSocket>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QThread>
 #include <QTextOption>
 #include <QTimer>
+#include <QToolButton>
 #include <QToolTip>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -70,6 +76,15 @@
 #include <QVersionNumber>
 #include <QUuid>
 #include <qdatetime.h>
+
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#pragma comment(lib, "Shell32.lib")
+#endif
 
 class RecentCopyPreview : public QFrame
 {
@@ -386,6 +401,12 @@ static const int kMaxReleaseDirHistory = 20;
 static const int kUpdateCheckIntervalMs = 2 * 60 * 60 * 1000;
 static const char *kUpdateApiUrl = "https://api.github.com/repos/UUxxXxxUU/SyncTool/contents/update.json?ref=master";
 static const char *kUpdateInfoUrl = "https://raw.githubusercontent.com/UUxxXxxUU/SyncTool/master/update.json";
+static const char *kReleaseListUrl = "https://github.com/UUxxXxxUU/SyncTool/releases";
+static const char *kReleaseTagUrl = "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v%1";
+static const char *kInstallerUrl = "https://github.com/UUxxXxxUU/SyncTool/releases/download/v%1/RemoteReleaseSync-%1-windows-x64-setup.exe";
+static const int kInstallerStallTimeoutMs = 60000;
+static const qint64 kMaxInstallerBytes = 512LL * 1024 * 1024;
+static const int kInstallDialogResult = 2;
 static const char *kUpdateButtonStyle = "QPushButton { background-color: %1; color: #17324d; border: 1px solid #72a9df; border-radius: 3px; padding: 4px 10px; }";
 #ifdef Q_OS_WIN
 static const char *kAutoStartRunKey = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -399,6 +420,66 @@ QString startupCommand()
 #else
     return QString();
 #endif
+}
+
+QString updateDownloadDir()
+{
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath("RemoteReleaseSync-update");
+}
+
+bool isDirectoryWritable(const QString &dirPath)
+{
+    QFile probe(QDir(dirPath).filePath(QString(".write-test-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces))));
+    if (!probe.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+    probe.close();
+    probe.remove();
+    return true;
+}
+
+QUrl optionalHttpsUrl(const QJsonObject &info, const QString &key, const QUrl &fallback)
+{
+    if (!info.value(key).isString()) {
+        return fallback;
+    }
+    const QUrl url(info.value(key).toString().trimmed(), QUrl::StrictMode);
+    return url.isValid() && url.scheme() == "https" && !url.host().isEmpty() ? url : fallback;
+}
+
+QNetworkRequest makeDownloadRequest(const QUrl &url)
+{
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysNetwork);
+    request.setRawHeader("User-Agent", "RemoteReleaseSync");
+    return request;
+}
+
+QString describeDownloadError(QNetworkReply *reply)
+{
+    if (reply->property("timedOut").toBool()) {
+        return QString("下载超时，请检查网络后重试。");
+    }
+    if (reply->property("tooLarge").toBool()) {
+        return QString("安装包大小异常，已停止下载。");
+    }
+    if (reply->property("writeFailed").toBool()) {
+        return QString("写入临时文件失败，请检查磁盘空间。");
+    }
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (statusCode == 404) {
+        return QString("安装包尚未发布或已被移除（HTTP 404），可前往发布页手动下载。");
+    }
+    if (statusCode > 0 && statusCode != 200) {
+        return QString("下载服务器返回 HTTP %1。").arg(statusCode);
+    }
+    return QString("下载失败，请检查网络后重试。\n%1").arg(reply->errorString());
+}
+
+QString formatMegabytes(qint64 bytes)
+{
+    return QString::number(static_cast<double>(bytes) / (1024.0 * 1024.0), 'f', 1) + " MB";
 }
 }
 
@@ -459,6 +540,19 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_trayIcon, &QSystemTrayIcon::activated, this, &MainWindow::trayIconActivated);
 
     m_trayIcon->show();
+
+    if (QCoreApplication::arguments().contains("--updated")) {
+        m_trayIcon->showMessage("远程 Release 同步工具",
+                                QString("已更新到 v%1。").arg(QCoreApplication::applicationVersion()),
+                                QSystemTrayIcon::Information,
+                                5000);
+    }
+    // 安装程序重启本程序后会自行退出，稍后再清理上次下载的安装包。
+    QTimer::singleShot(60000, this, [this]() {
+        if (m_installerReply == nullptr && m_readyInstallerPath.isEmpty()) {
+            QDir(updateDownloadDir()).removeRecursively();
+        }
+    });
 }
 
 MainWindow::~MainWindow()
@@ -739,11 +833,25 @@ void MainWindow::setupUi()
     m_checkUpdatesOnStartupCheck = new QCheckBox("启动时检查更新", this);
     m_checkUpdatesOnStartupCheck->setToolTip("下次启动时额外检查更新；每 2 小时的定时检查始终运行。");
     statusBar()->addPermanentWidget(m_checkUpdatesOnStartupCheck);
+    m_silentUpdateCheck = new QCheckBox("无感更新", this);
+    m_silentUpdateCheck->setToolTip("发现新版本后在后台下载安装包，没有同步任务运行时自动安装并重启程序。");
+    statusBar()->addPermanentWidget(m_silentUpdateCheck);
     m_checkUpdatesButton = new QPushButton("检查更新", this);
     statusBar()->addPermanentWidget(m_checkUpdatesButton);
     connect(m_checkUpdatesButton, &QPushButton::clicked, this, &MainWindow::checkForUpdates);
     connect(m_checkUpdatesOnStartupCheck, &QCheckBox::toggled, this, [this](bool) {
         saveConfiguration();
+    });
+    connect(m_silentUpdateCheck, &QCheckBox::toggled, this, [this](bool enabled) {
+        saveConfiguration();
+        if (enabled) {
+            m_silentInstallFailedVersion.clear();
+            if (!m_availableUpdateVersion.isEmpty() && !isReadyInstallerCurrent()) {
+                startInstallerDownload(false);
+            }
+        } else if (m_installerReply != nullptr && !m_installerDownloadInteractive) {
+            abortInstallerDownload();
+        }
     });
 
     m_updatePulse = new QVariantAnimation(this);
@@ -924,15 +1032,41 @@ void MainWindow::requestUpdateInfo(bool useRawFallback)
             failCheck("更新信息中的下载地址必须为有效的 HTTPS 地址。");
             return;
         }
+        // sections、releaseUrl、installerUrl 为可选字段，缺失或无效时使用默认值，兼容旧格式清单。
+        QVector<UpdateNoteSection> sections;
+        const QJsonArray sectionArray = info.value("sections").toArray();
+        for (const QJsonValue &sectionValue : sectionArray) {
+            const QJsonObject sectionObject = sectionValue.toObject();
+            UpdateNoteSection section;
+            section.title = sectionObject.value("title").toString().trimmed();
+            const QJsonArray itemArray = sectionObject.value("items").toArray();
+            for (const QJsonValue &itemValue : itemArray) {
+                const QString item = itemValue.toString().trimmed();
+                if (!item.isEmpty()) {
+                    section.items.append(item);
+                }
+            }
+            if (!section.title.isEmpty() && !section.items.isEmpty()) {
+                sections.append(section);
+            }
+        }
         // 仅完整校验成功的结果可以替换缓存，断网或清单异常时保留已发现的新版本。
         if (QVersionNumber::compare(latestVersion, currentVersion) > 0) {
             m_availableUpdateVersion = latestVersionText;
             m_availableUpdateNotes = info.value("notes").toString().trimmed();
             m_availableUpdateUrl = downloadUrl;
+            m_availableReleaseUrl = optionalHttpsUrl(info, "releaseUrl",
+                                                     QUrl(QString::fromLatin1(kReleaseTagUrl).arg(latestVersionText)));
+            m_availableInstallerUrl = optionalHttpsUrl(info, "installerUrl",
+                                                       QUrl(QString::fromLatin1(kInstallerUrl).arg(latestVersionText)));
+            m_availableUpdateSections = sections;
         } else {
             m_availableUpdateVersion.clear();
             m_availableUpdateNotes.clear();
             m_availableUpdateUrl = QUrl();
+            m_availableReleaseUrl = QUrl();
+            m_availableInstallerUrl = QUrl();
+            m_availableUpdateSections.clear();
         }
         finishUpdateCheck();
     });
@@ -945,14 +1079,20 @@ void MainWindow::finishUpdateCheck(const QString &errorMessage)
     m_updateCheckInProgress = false;
     m_updateCheckInteractive = false;
     updateCheckButton();
-    if (m_isClosing || !interactive) {
+    if (m_isClosing) {
+        return;
+    }
+    if (errorMessage.isEmpty() && !m_availableUpdateVersion.isEmpty() && m_silentUpdateCheck->isChecked()
+        && !isReadyInstallerCurrent() && m_installerDownloadVersion != m_availableUpdateVersion) {
+        startInstallerDownload(false);
+    }
+    if (!interactive) {
         return;
     }
     if (!errorMessage.isEmpty()) {
         QMessageBox::warning(this, "检查更新失败", errorMessage);
     } else if (m_availableUpdateVersion.isEmpty()) {
-        QMessageBox::information(this, "检查更新",
-                                 QString("当前已是最新版本（%1）。").arg(QCoreApplication::applicationVersion()));
+        showUpdateHistoryLink(QString("当前已是最新版本（%1）。").arg(QCoreApplication::applicationVersion()));
     } else {
         showAvailableUpdate();
     }
@@ -963,26 +1103,561 @@ void MainWindow::showAvailableUpdate()
     if (m_isClosing || m_updateDialogOpen || m_availableUpdateVersion.isEmpty()) {
         return;
     }
-    // 对话框会运行嵌套事件循环，保留本次展示的版本和地址，避免后台结果替换下载目标。
+    // 对话框会运行嵌套事件循环，保留本次展示的内容，避免后台结果替换显示信息。
     const QString version = m_availableUpdateVersion;
-    const QUrl downloadUrl = m_availableUpdateUrl;
+    const QString notes = m_availableUpdateNotes;
+    const QVector<UpdateNoteSection> sections = m_availableUpdateSections;
+    const QUrl historyUrl = m_availableUpdateUrl;
+    const QUrl releaseUrl = m_availableReleaseUrl.isValid() ? m_availableReleaseUrl : m_availableUpdateUrl;
     m_updateDialogOpen = true;
     updateCheckButton();
-    QMessageBox updateDialog(this);
-    updateDialog.setWindowTitle("发现新版本");
-    updateDialog.setIcon(QMessageBox::Information);
-    updateDialog.setTextFormat(Qt::PlainText);
-    updateDialog.setText(QString("当前版本：%1\n最新版本：%2").arg(QCoreApplication::applicationVersion(), version));
-    updateDialog.setInformativeText(m_availableUpdateNotes.isEmpty() ? QString("暂无更新说明。") : m_availableUpdateNotes);
-    QPushButton *downloadButton = updateDialog.addButton("前往下载", QMessageBox::AcceptRole);
-    updateDialog.addButton("稍后", QMessageBox::RejectRole);
-    updateDialog.exec();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("发现新版本");
+    dialog.setWindowFlags(dialog.windowFlags() & ~Qt::WindowContextHelpButtonHint);
+    dialog.resize(620, 560);
+    dialog.setStyleSheet(
+        "QPushButton#primaryButton { background-color: #0a7cff; color: white; border: 1px solid #0a7cff;"
+        " border-radius: 4px; padding: 6px 18px; }"
+        "QPushButton#primaryButton:hover { background-color: #2b8fff; }"
+        "QPushButton#primaryButton:disabled { background-color: #9cc9ff; border-color: #9cc9ff; }"
+        "QPushButton#secondaryButton { background-color: white; color: #0a7cff; border: 1px solid #0a7cff;"
+        " border-radius: 4px; padding: 6px 18px; }"
+        "QToolButton#sectionButton { border: none; font-weight: bold; padding: 2px 0px; }"
+        "QProgressBar { border: none; background-color: #cfe4ff; border-radius: 3px; }"
+        "QProgressBar::chunk { background-color: #0a7cff; border-radius: 3px; }");
+
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(24, 20, 24, 16);
+    layout->setSpacing(12);
+
+    auto *headerLayout = new QHBoxLayout();
+    auto *titleLabel = new QLabel(QString("新版本 v%1").arg(version), &dialog);
+    QFont titleFont = titleLabel->font();
+    titleFont.setPointSize(titleFont.pointSize() + 6);
+    titleLabel->setFont(titleFont);
+    headerLayout->addWidget(titleLabel);
+    headerLayout->addStretch(1);
+    auto *releasePageButton = new QPushButton("前往发布页", &dialog);
+    releasePageButton->setObjectName("primaryButton");
+    releasePageButton->setAutoDefault(false);
+    headerLayout->addWidget(releasePageButton);
+    layout->addLayout(headerLayout);
+
+    auto *currentVersionLabel = new QLabel(QString("当前版本 v%1").arg(QCoreApplication::applicationVersion()), &dialog);
+    currentVersionLabel->setStyleSheet("color: #6b7785;");
+    layout->addWidget(currentVersionLabel);
+
+    auto *scrollArea = new QScrollArea(&dialog);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    auto *notesWidget = new QWidget(scrollArea);
+    auto *notesLayout = new QVBoxLayout(notesWidget);
+    notesLayout->setContentsMargins(0, 0, 0, 0);
+    notesLayout->setSpacing(6);
+    if (!notes.isEmpty() || sections.isEmpty()) {
+        auto *summaryLabel = new QLabel(notes.isEmpty() ? QString("暂无更新说明。") : notes, notesWidget);
+        summaryLabel->setTextFormat(Qt::PlainText);
+        summaryLabel->setWordWrap(true);
+        summaryLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        if (!sections.isEmpty()) {
+            summaryLabel->setStyleSheet("color: #4a5561;");
+        }
+        notesLayout->addWidget(summaryLabel);
+    }
+    for (const UpdateNoteSection &section : sections) {
+        auto *sectionButton = new QToolButton(notesWidget);
+        sectionButton->setObjectName("sectionButton");
+        sectionButton->setText(QString("%1（%2）").arg(section.title).arg(section.items.size()));
+        sectionButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        sectionButton->setArrowType(Qt::RightArrow);
+        sectionButton->setCheckable(true);
+        sectionButton->setAutoRaise(true);
+        sectionButton->setCursor(Qt::PointingHandCursor);
+        QFont sectionFont = sectionButton->font();
+        sectionFont.setPointSize(sectionFont.pointSize() + 1);
+        sectionFont.setBold(true);
+        sectionButton->setFont(sectionFont);
+
+        QStringList itemsHtml;
+        for (const QString &item : section.items) {
+            itemsHtml.append(QString("<li>%1</li>").arg(item.toHtmlEscaped()));
+        }
+        auto *itemsLabel = new QLabel(QString("<ul style=\"margin-top:0px; margin-bottom:0px; -qt-list-indent:1;\">%1</ul>")
+                                          .arg(itemsHtml.join(QString())),
+                                      notesWidget);
+        itemsLabel->setTextFormat(Qt::RichText);
+        itemsLabel->setWordWrap(true);
+        itemsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        itemsLabel->setContentsMargins(18, 0, 0, 4);
+        itemsLabel->setVisible(false);
+        connect(sectionButton, &QToolButton::toggled, itemsLabel, [sectionButton, itemsLabel](bool expanded) {
+            sectionButton->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+            itemsLabel->setVisible(expanded);
+        });
+        notesLayout->addWidget(sectionButton, 0, Qt::AlignLeft);
+        notesLayout->addWidget(itemsLabel);
+    }
+    auto *linksLabel = new QLabel(QString("<a href=\"release\">查看更多</a>&nbsp;&nbsp;&nbsp;&nbsp;"
+                                          "<a href=\"history\">历史版本下载</a>"),
+                                  notesWidget);
+    linksLabel->setTextFormat(Qt::RichText);
+    linksLabel->setToolTip("在 GitHub 发布页查看完整更新说明，或下载其他版本。");
+    connect(linksLabel, &QLabel::linkActivated, this, [this, releaseUrl, historyUrl](const QString &link) {
+        openUpdateUrl(link == "history" ? historyUrl : releaseUrl);
+    });
+    notesLayout->addSpacing(6);
+    notesLayout->addWidget(linksLabel);
+    notesLayout->addStretch(1);
+    scrollArea->setWidget(notesWidget);
+    layout->addWidget(scrollArea, 1);
+
+    auto *progressBar = new QProgressBar(&dialog);
+    progressBar->setRange(0, 100);
+    progressBar->setValue(0);
+    progressBar->setTextVisible(false);
+    progressBar->setFixedHeight(6);
+    layout->addWidget(progressBar);
+    auto *statusLabel = new QLabel(&dialog);
+    statusLabel->setStyleSheet("color: #6b7785;");
+    statusLabel->setWordWrap(true);
+    layout->addWidget(statusLabel);
+
+    auto *buttonLayout = new QHBoxLayout();
+    buttonLayout->addStretch(1);
+    auto *cancelButton = new QPushButton("取消", &dialog);
+    cancelButton->setObjectName("secondaryButton");
+    cancelButton->setAutoDefault(false);
+    auto *installButton = new QPushButton("更新", &dialog);
+    installButton->setObjectName("primaryButton");
+    installButton->setDefault(true);
+    buttonLayout->addWidget(cancelButton);
+    buttonLayout->addWidget(installButton);
+    layout->addLayout(buttonLayout);
+
+    m_updateDialog = &dialog;
+    m_updateDialogProgress = progressBar;
+    m_updateDialogStatus = statusLabel;
+    m_updateDialogInstallButton = installButton;
+    if (isReadyInstallerCurrent()) {
+        setUpdateDialogStatus("安装包已下载并通过校验，点击“更新”立即安装，程序会自动重启。", 100);
+    } else if (m_installerReply != nullptr) {
+        setUpdateDialogStatus("正在后台下载安装包...");
+    } else {
+        setUpdateDialogStatus("点击“更新”下载安装包，安装完成后程序会自动重启。", 0);
+    }
+
+    connect(releasePageButton, &QPushButton::clicked, this, [this, releaseUrl]() {
+        openUpdateUrl(releaseUrl);
+    });
+    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+    connect(installButton, &QPushButton::clicked, &dialog, [this, &dialog, installButton]() {
+        if (isReadyInstallerCurrent()) {
+            dialog.done(kInstallDialogResult);
+            return;
+        }
+        m_installAfterDownload = true;
+        installButton->setEnabled(false);
+        installButton->setText("下载中...");
+        startInstallerDownload(true);
+    });
+
+    const int result = dialog.exec();
+    m_updateDialog.clear();
+    m_updateDialogProgress.clear();
+    m_updateDialogStatus.clear();
+    m_updateDialogInstallButton.clear();
     m_updateDialogOpen = false;
     m_dismissedUpdateVersion = version;
-    updateCheckButton();
-    if (!m_isClosing && updateDialog.clickedButton() == downloadButton && !QDesktopServices::openUrl(downloadUrl)) {
-        QMessageBox::warning(this, "打开下载页面失败", QString("请在浏览器中访问：\n%1").arg(downloadUrl.toString()));
+    if (result != kInstallDialogResult) {
+        m_installAfterDownload = false;
+        // 用户取消时停止由对话框发起的下载；开启无感更新时保留后台下载。
+        if (m_installerReply != nullptr && m_installerDownloadInteractive && !m_silentUpdateCheck->isChecked()) {
+            abortInstallerDownload();
+        }
+        m_installerDownloadInteractive = false;
     }
+    updateCheckButton();
+    if (!m_isClosing && result == kInstallDialogResult) {
+        installUpdateNow();
+    }
+}
+
+void MainWindow::openUpdateUrl(const QUrl &url)
+{
+    const QUrl target = url.isValid() ? url : QUrl(QString::fromLatin1(kReleaseListUrl));
+    if (!QDesktopServices::openUrl(target)) {
+        QMessageBox::warning(this, "打开页面失败", QString("请在浏览器中访问：\n%1").arg(target.toString()));
+    }
+}
+
+void MainWindow::showUpdateHistoryLink(const QString &message)
+{
+    QMessageBox box(this);
+    box.setWindowTitle("检查更新");
+    box.setIcon(QMessageBox::Information);
+    box.setText(message);
+    box.addButton("确定", QMessageBox::AcceptRole);
+    QPushButton *historyButton = box.addButton("历史版本下载", QMessageBox::ActionRole);
+    box.exec();
+    if (!m_isClosing && box.clickedButton() == historyButton) {
+        openUpdateUrl(QUrl(QString::fromLatin1(kReleaseListUrl)));
+    }
+}
+
+bool MainWindow::isReadyInstallerCurrent() const
+{
+    return !m_readyInstallerPath.isEmpty() && !m_availableUpdateVersion.isEmpty()
+        && m_readyInstallerVersion == m_availableUpdateVersion && QFileInfo::exists(m_readyInstallerPath);
+}
+
+void MainWindow::setUpdateDialogStatus(const QString &text, int percent)
+{
+    if (m_updateDialogStatus != nullptr) {
+        m_updateDialogStatus->setText(text);
+    }
+    if (percent >= 0 && m_updateDialogProgress != nullptr) {
+        m_updateDialogProgress->setValue(qBound(0, percent, 100));
+    }
+}
+
+void MainWindow::startInstallerDownload(bool interactive)
+{
+    if (m_isClosing || m_availableUpdateVersion.isEmpty() || !m_availableInstallerUrl.isValid()) {
+        return;
+    }
+    if (isReadyInstallerCurrent()) {
+        m_installerDownloadInteractive = m_installerDownloadInteractive || interactive;
+        finishInstallerDownload();
+        return;
+    }
+    if (m_installerReply != nullptr && m_installerDownloadVersion == m_availableUpdateVersion) {
+        m_installerDownloadInteractive = m_installerDownloadInteractive || interactive;
+        return;
+    }
+
+    const bool installAfterDownload = m_installAfterDownload;
+    abortInstallerDownload();
+    m_installAfterDownload = installAfterDownload;
+    m_installerDownloadVersion = m_availableUpdateVersion;
+    m_installerDownloadUrl = m_availableInstallerUrl;
+    m_installerDownloadInteractive = interactive;
+    if (!QSslSocket::supportsSsl()) {
+        failInstallerDownload("当前发布包缺少 HTTPS 支持，请补齐与 Qt 配套的 TLS 运行库。");
+        return;
+    }
+    if (m_updateNetworkManager == nullptr) {
+        m_updateNetworkManager = new QNetworkAccessManager(this);
+    }
+    setUpdateDialogStatus("正在获取安装包校验信息...", 0);
+    requestInstallerChecksum();
+}
+
+void MainWindow::requestInstallerChecksum()
+{
+    const QUrl checksumUrl(m_installerDownloadUrl.toString() + ".sha256");
+    QNetworkReply *reply = m_updateNetworkManager->get(makeDownloadRequest(checksumUrl));
+    m_installerReply = reply;
+
+    QTimer *timeout = new QTimer(reply);
+    timeout->setSingleShot(true);
+    connect(timeout, &QTimer::timeout, reply, [reply]() {
+        reply->setProperty("timedOut", true);
+        reply->abort();
+    });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, timeout]() {
+        timeout->stop();
+        reply->deleteLater();
+        if (m_installerReply != reply) {
+            return;
+        }
+        m_installerReply.clear();
+        if (m_isClosing) {
+            return;
+        }
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError || statusCode != 200) {
+            failInstallerDownload(describeDownloadError(reply));
+            return;
+        }
+        // 校验文件格式为“摘要 *文件名”，只取开头的 64 位十六进制 SHA256。
+        const QString content = QString::fromLatin1(reply->read(4096));
+        const QRegularExpressionMatch match = QRegularExpression("\\A\\s*([0-9A-Fa-f]{64})(\\s|\\z)").match(content);
+        if (!match.hasMatch()) {
+            failInstallerDownload("安装包校验文件格式无效。");
+            return;
+        }
+        requestInstallerFile(match.captured(1).toLower());
+    });
+    timeout->start(15000);
+}
+
+void MainWindow::requestInstallerFile(const QString &expectedSha256)
+{
+    const QString dirPath = updateDownloadDir();
+    if (!QDir().mkpath(dirPath)) {
+        failInstallerDownload(QString("无法创建临时目录：%1").arg(QDir::toNativeSeparators(dirPath)));
+        return;
+    }
+    const QString partPath = QDir(dirPath).filePath(
+        QString("RemoteReleaseSync-%1-windows-x64-setup.exe.part").arg(m_installerDownloadVersion));
+    QFile::remove(partPath);
+    m_installerFile = new QFile(partPath, this);
+    if (!m_installerFile->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        failInstallerDownload(QString("无法写入临时文件：%1").arg(m_installerFile->errorString()));
+        return;
+    }
+    m_installerHash.reset(new QCryptographicHash(QCryptographicHash::Sha256));
+
+    QNetworkReply *reply = m_updateNetworkManager->get(makeDownloadRequest(m_installerDownloadUrl));
+    m_installerReply = reply;
+    setUpdateDialogStatus("正在下载安装包...", 0);
+
+    // 只在长时间没有收到数据时中止，避免大文件在慢速网络下被误判超时。
+    QTimer *stallTimer = new QTimer(reply);
+    stallTimer->setSingleShot(true);
+    connect(stallTimer, &QTimer::timeout, reply, [reply]() {
+        reply->setProperty("timedOut", true);
+        reply->abort();
+    });
+    connect(reply, &QNetworkReply::readyRead, this, [this, reply]() {
+        appendInstallerChunk(reply);
+    });
+    connect(reply, &QNetworkReply::downloadProgress, this, [this, stallTimer](qint64 received, qint64 total) {
+        stallTimer->start(kInstallerStallTimeoutMs);
+        if (total > 0) {
+            setUpdateDialogStatus(QString("正在下载安装包 %1 / %2").arg(formatMegabytes(received), formatMegabytes(total)),
+                                  static_cast<int>(received * 100 / total));
+        } else {
+            setUpdateDialogStatus(QString("正在下载安装包 %1").arg(formatMegabytes(received)));
+        }
+    });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, stallTimer, expectedSha256]() {
+        stallTimer->stop();
+        reply->deleteLater();
+        if (m_installerReply != reply) {
+            return;
+        }
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool succeeded = reply->error() == QNetworkReply::NoError && statusCode == 200 && appendInstallerChunk(reply);
+        m_installerReply.clear();
+        if (m_isClosing) {
+            abortInstallerDownload();
+            return;
+        }
+        if (!succeeded) {
+            failInstallerDownload(describeDownloadError(reply));
+            return;
+        }
+
+        const QString partPath = m_installerFile->fileName();
+        const bool flushed = m_installerFile->flush();
+        m_installerFile->close();
+        delete m_installerFile;
+        m_installerFile = nullptr;
+        const QString actualSha256 = QString::fromLatin1(m_installerHash->result().toHex());
+        m_installerHash.reset();
+        if (!flushed) {
+            QFile::remove(partPath);
+            failInstallerDownload("写入临时文件失败，请检查磁盘空间。");
+            return;
+        }
+        if (actualSha256 != expectedSha256) {
+            QFile::remove(partPath);
+            failInstallerDownload("安装包 SHA256 校验失败，已删除下载的文件，请稍后重试。");
+            return;
+        }
+        const QString finalPath = partPath.left(partPath.size() - QString(".part").size());
+        QFile::remove(finalPath);
+        if (!QFile::rename(partPath, finalPath)) {
+            QFile::remove(partPath);
+            failInstallerDownload(QString("无法保存安装包：%1").arg(QDir::toNativeSeparators(finalPath)));
+            return;
+        }
+        m_readyInstallerPath = finalPath;
+        m_readyInstallerVersion = m_installerDownloadVersion;
+        finishInstallerDownload();
+    });
+    stallTimer->start(kInstallerStallTimeoutMs);
+}
+
+bool MainWindow::appendInstallerChunk(QNetworkReply *reply)
+{
+    if (m_installerReply != reply || m_installerFile == nullptr || !m_installerHash) {
+        return false;
+    }
+    // 自动跟随重定向时，跳转响应的内容不属于安装包。
+    if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) {
+        reply->readAll();
+        return true;
+    }
+    const QByteArray chunk = reply->readAll();
+    if (chunk.isEmpty()) {
+        return true;
+    }
+    if (m_installerFile->size() + chunk.size() > kMaxInstallerBytes) {
+        reply->setProperty("tooLarge", true);
+        reply->abort();
+        return false;
+    }
+    if (m_installerFile->write(chunk) != chunk.size()) {
+        reply->setProperty("writeFailed", true);
+        reply->abort();
+        return false;
+    }
+    m_installerHash->addData(chunk);
+    return true;
+}
+
+void MainWindow::abortInstallerDownload()
+{
+    if (m_installerReply != nullptr) {
+        QNetworkReply *reply = m_installerReply;
+        m_installerReply.clear();
+        reply->disconnect(this);
+        reply->abort();
+        reply->deleteLater();
+    }
+    if (m_installerFile != nullptr) {
+        const QString partPath = m_installerFile->fileName();
+        m_installerFile->close();
+        delete m_installerFile;
+        m_installerFile = nullptr;
+        QFile::remove(partPath);
+    }
+    m_installerHash.reset();
+    m_installerDownloadVersion.clear();
+    m_installerDownloadUrl = QUrl();
+    m_installerDownloadInteractive = false;
+    m_installAfterDownload = false;
+}
+
+void MainWindow::failInstallerDownload(const QString &errorMessage)
+{
+    const bool interactive = m_installerDownloadInteractive;
+    abortInstallerDownload();
+    if (m_isClosing) {
+        return;
+    }
+    if (m_updateDialog != nullptr) {
+        setUpdateDialogStatus(QString("下载失败：%1").arg(errorMessage), 0);
+        if (m_updateDialogInstallButton != nullptr) {
+            m_updateDialogInstallButton->setEnabled(true);
+            m_updateDialogInstallButton->setText("重试");
+        }
+    } else if (interactive) {
+        QMessageBox::warning(this, "下载更新失败", errorMessage);
+    } else {
+        statusBar()->showMessage(QString("后台下载更新失败，将在下次检查时重试：%1").arg(errorMessage.section('\n', 0, 0)), 8000);
+    }
+}
+
+void MainWindow::finishInstallerDownload()
+{
+    const bool installNow = m_installAfterDownload;
+    m_installerDownloadVersion.clear();
+    m_installerDownloadUrl = QUrl();
+    m_installerDownloadInteractive = false;
+    m_installAfterDownload = false;
+    if (m_isClosing) {
+        return;
+    }
+    if (installNow && m_updateDialog != nullptr) {
+        setUpdateDialogStatus("安装包已下载并通过校验，正在准备安装...", 100);
+        m_updateDialog->done(kInstallDialogResult);
+        return;
+    }
+    if (m_updateDialog != nullptr) {
+        setUpdateDialogStatus("安装包已下载并通过校验，点击“更新”立即安装，程序会自动重启。", 100);
+        if (m_updateDialogInstallButton != nullptr) {
+            m_updateDialogInstallButton->setEnabled(true);
+            m_updateDialogInstallButton->setText("更新");
+        }
+    }
+    if (m_silentUpdateCheck->isChecked()) {
+        statusBar()->showMessage(QString("新版本 %1 已下载，将在没有同步任务时自动安装。").arg(m_readyInstallerVersion), 8000);
+        QTimer::singleShot(0, this, [this]() {
+            installSilentUpdateIfIdle();
+        });
+    }
+}
+
+bool MainWindow::launchInstaller(bool silent, QString *errorMessage)
+{
+#ifdef Q_OS_WIN
+    const QString appDir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
+    const bool writable = isDirectoryWritable(appDir);
+    if (silent && !writable) {
+        *errorMessage = QString("程序目录没有写入权限：%1").arg(appDir);
+        return false;
+    }
+    // 安装到当前程序所在目录；安装程序等待本程序退出后替换文件，并按当前窗口状态重启程序。
+    QStringList arguments;
+    arguments << (silent ? "/VERYSILENT" : "/SILENT") << "/SUPPRESSMSGBOXES" << "/NORESTART" << "/SP-"
+              << QString("/DIR=\"%1\"").arg(appDir)
+              << QString("/RELAUNCH=%1").arg(isVisible() ? "show" : "hidden")
+              << QString("/LOG=\"%1\"").arg(QDir::toNativeSeparators(QDir(updateDownloadDir()).filePath("install.log")));
+    if (!writable) {
+        // 目录需要管理员权限时让安装程序请求提升权限。
+        arguments << "/ALLUSERS";
+    }
+    const QString installerPath = QDir::toNativeSeparators(m_readyInstallerPath);
+    const QString parameters = arguments.join(' ');
+    const HINSTANCE result = ShellExecuteW(nullptr,
+                                           L"open",
+                                           reinterpret_cast<LPCWSTR>(installerPath.utf16()),
+                                           reinterpret_cast<LPCWSTR>(parameters.utf16()),
+                                           nullptr,
+                                           SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32) {
+        *errorMessage = QString("无法启动安装程序（错误码 %1）。").arg(static_cast<qlonglong>(reinterpret_cast<INT_PTR>(result)));
+        return false;
+    }
+    return true;
+#else
+    Q_UNUSED(silent);
+    *errorMessage = QString("当前系统不支持自动安装更新。");
+    return false;
+#endif
+}
+
+void MainWindow::installUpdateNow()
+{
+    if (m_isClosing || m_isInstallingUpdate || !isReadyInstallerCurrent()) {
+        return;
+    }
+    if (hasRunningWorkers()
+        && QMessageBox::question(this, "安装更新", "当前有同步任务正在运行，安装更新会停止这些任务。是否继续？")
+               != QMessageBox::Yes) {
+        return;
+    }
+    QString error;
+    if (!launchInstaller(false, &error)) {
+        QMessageBox::warning(this, "安装更新失败", QString("%1\n可前往发布页手动下载安装包。").arg(error));
+        return;
+    }
+    m_isInstallingUpdate = true;
+    realExit();
+}
+
+bool MainWindow::installSilentUpdateIfIdle()
+{
+    if (m_isClosing || m_isInstallingUpdate || !m_silentUpdateCheck->isChecked() || !isReadyInstallerCurrent()
+        || m_silentInstallFailedVersion == m_readyInstallerVersion || m_updateDialogOpen
+        || hasRunningWorkers() || m_pendingSyncAfterCurrentRun || (isVisible() && isActiveWindow())
+        || QApplication::activeModalWidget() != nullptr || QApplication::activePopupWidget() != nullptr) {
+        return false;
+    }
+    QString error;
+    if (!launchInstaller(true, &error)) {
+        // 同一版本不再反复尝试，用户仍可通过“检查更新”手动安装。
+        m_silentInstallFailedVersion = m_readyInstallerVersion;
+        statusBar()->showMessage(QString("无感更新未执行：%1").arg(error), 10000);
+        return false;
+    }
+    m_isInstallingUpdate = true;
+    realExit();
+    return true;
 }
 
 void MainWindow::updateCheckButton()
@@ -994,7 +1669,7 @@ void MainWindow::updateCheckButton()
     m_checkUpdatesButton->setEnabled(!m_isClosing && (!m_updateCheckInProgress || hasUpdate));
     m_checkUpdatesButton->setText(hasUpdate ? "发现新版本" : (m_updateCheckInProgress ? "正在检查..." : "检查更新"));
     m_checkUpdatesButton->setToolTip(hasUpdate
-        ? QString("发现版本 %1，点击查看更新说明并选择是否下载。").arg(m_availableUpdateVersion)
+        ? QString("发现版本 %1，点击查看更新说明并选择是否更新。").arg(m_availableUpdateVersion)
         : QString("手动检查软件更新；程序每 2 小时自动检查一次。"));
 
     const bool dismissed = !m_dismissedUpdateVersion.isEmpty()
@@ -1031,6 +1706,7 @@ void MainWindow::stopUpdateChecks()
         m_updateReply->abort();
         m_updateReply.clear();
     }
+    abortInstallerDownload();
 }
 
 void MainWindow::onReleaseDirEditFinished()
@@ -1112,6 +1788,10 @@ void MainWindow::applyConfigToUi()
         m_checkUpdatesOnStartupCheck->setChecked(m_config.checkUpdatesOnStartup);
     }
     {
+        QSignalBlocker blocker(m_silentUpdateCheck);
+        m_silentUpdateCheck->setChecked(m_config.silentUpdate);
+    }
+    {
         QSignalBlocker blocker(m_intervalSpin);
         m_intervalSpin->setValue(qMax(1, m_config.scanIntervalSeconds));
     }
@@ -1140,6 +1820,7 @@ void MainWindow::collectUiToConfig()
     m_config.autoSync = m_autoSyncCheck->isChecked();
     m_config.startWithSystem = m_startWithSystemCheck->isChecked();
     m_config.checkUpdatesOnStartup = m_checkUpdatesOnStartupCheck->isChecked();
+    m_config.silentUpdate = m_silentUpdateCheck->isChecked();
     m_config.scanIntervalSeconds = m_intervalSpin->value();
 
     QStringList types;
@@ -1675,7 +2356,11 @@ void MainWindow::handleWorkerFinished(const QString &hostId)
 
 void MainWindow::pollForChanges()
 {
-    if (m_isClosing || m_backgroundTasksPaused || hasRunningWorkers()) {
+    if (m_isClosing || hasRunningWorkers()) {
+        return;
+    }
+    if (m_backgroundTasksPaused) {
+        installSilentUpdateIfIdle();
         return;
     }
 
@@ -1687,6 +2372,10 @@ void MainWindow::pollForChanges()
     }
 
     const bool changed = fingerprint != m_lastFingerprint;
+    // 本地无新变化且没有任务运行时视为空闲，此时执行已下载好的无感更新。
+    if (!changed && installSilentUpdateIfIdle()) {
+        return;
+    }
     if (changed) {
         m_lastFingerprint = fingerprint;
         if (m_autoSyncCheck->isChecked()) {

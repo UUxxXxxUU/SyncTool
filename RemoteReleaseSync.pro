@@ -19,4 +19,4 @@ HEADERS += \
 RESOURCES += resources/app.qrc
 
 win32:RC_FILE = resources/app.rc
-win32:LIBS += -lMpr
+win32:LIBS += -lMpr -lShell32

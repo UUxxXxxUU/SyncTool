@@ -7,11 +7,15 @@
 #include <QMessageBox>
 #include <QSharedMemory>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
     app.setApplicationName("RemoteReleaseSync");
-    app.setApplicationVersion("1.0.5");
+    app.setApplicationVersion("1.0.6");
     app.setOrganizationName("LocalTools");
     app.setQuitOnLastWindowClosed(false);
 
@@ -31,6 +35,12 @@ int main(int argc, char *argv[])
         QMessageBox::information(nullptr, "提示", "程序已经在运行。");
         return 0;
     }
+
+#ifdef Q_OS_WIN
+    // 安装程序通过该互斥量等待本程序完全退出后再替换文件，句柄随进程结束释放。
+    HANDLE runningMutex = CreateMutexW(nullptr, FALSE, L"LocalTools.RemoteReleaseSync.Running");
+    Q_UNUSED(runningMutex);
+#endif
 
     QFont font;
     font.setPointSize(10);

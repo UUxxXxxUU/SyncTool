@@ -1,6 +1,6 @@
 ﻿cmake_minimum_required(VERSION 3.16)
 
-project(RemoteReleaseSync VERSION 1.0.5 LANGUAGES CXX)
+project(RemoteReleaseSync VERSION 1.0.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,7 +29,7 @@ target_link_libraries(RemoteReleaseSync PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Q
 
 if (WIN32)
     target_sources(RemoteReleaseSync PRIVATE resources/app.rc)
-    target_link_libraries(RemoteReleaseSync PRIVATE Mpr)
+    target_link_libraries(RemoteReleaseSync PRIVATE Mpr Shell32)
 endif()
 
 if (QT_VERSION_MAJOR EQUAL 6)

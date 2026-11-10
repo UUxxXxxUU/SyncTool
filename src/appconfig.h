@@ -26,6 +26,7 @@ struct AppConfig
     bool autoSync = true;
     bool startWithSystem = false;
     bool checkUpdatesOnStartup = false;
+    bool silentUpdate = false;
     int scanIntervalSeconds = 5;
     QVector<HostEntry> hosts;
     QStringList releaseDirHistory;
