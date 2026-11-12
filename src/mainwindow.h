@@ -58,7 +58,7 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget *parent = nullptr, const QString &configPath = QString());
+    explicit MainWindow(QWidget *parent = nullptr, const QString &configPath = QString(), bool manageSystemStartup = true);
     ~MainWindow() override;
 
 protected:
@@ -161,6 +161,7 @@ private:
     std::unique_ptr<Ui::MainWindow> m_ui;
     AppConfig m_config;
     QString m_configPath;
+    bool m_manageSystemStartup = true;
     QString m_lastFingerprint;
     QString m_lastShareOpenPath;
     QElapsedTimer m_shareOpenClickTimer;

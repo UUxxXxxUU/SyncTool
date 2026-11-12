@@ -115,7 +115,7 @@ private:
         config.hosts.append(host);
         QString error;
         if (!ConfigManager::save(configPath(), config, &error)) qFatal("Cannot save test config");
-        auto result = std::make_unique<MainWindow>(nullptr, configPath());
+        auto result = std::make_unique<MainWindow>(nullptr, configPath(), false);
         stopTimers(*result);
         return result;
     }
@@ -140,9 +140,8 @@ private slots:
     void cleanup()
     {
         QSettings settings(startupKey, QSettings::NativeFormat);
-        if (m_hadStartup) settings.setValue("RemoteReleaseSync", m_originalStartup);
-        else settings.remove("RemoteReleaseSync");
-        settings.sync();
+        QCOMPARE(settings.contains("RemoteReleaseSync"), m_hadStartup);
+        QCOMPARE(settings.value("RemoteReleaseSync").toString(), m_originalStartup);
         m_temp.reset();
     }
     void relativePathsAndFilters()
