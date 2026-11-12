@@ -102,6 +102,7 @@ private:
     };
 
     void setupUi();
+    void showUsageTips();
     void startUpdateCheck(bool interactive);
     void requestUpdateInfo(bool useRawFallback);
     void finishUpdateCheck(const QString &errorMessage = QString());
@@ -168,6 +169,7 @@ private:
     QListWidget *m_typeList = nullptr;
     QLineEdit *m_newTypeEdit = nullptr;
     QCheckBox *m_autoSyncCheck = nullptr;
+    QPointer<QDialog> m_usageTipsDialog;
     QCheckBox *m_startWithSystemCheck = nullptr;
     QCheckBox *m_checkUpdatesOnStartupCheck = nullptr;
     QCheckBox *m_silentUpdateCheck = nullptr;

@@ -1,24 +1,22 @@
 {
-  "version": "1.0.6",
-  "notes": "新增安装程序与【无感更新】选项；检查更新改为在程序内下载安装包并自动安装，更新说明按类别展示，并提供历史版本下载入口。",
+  "version": "1.0.7",
+  "notes": "新增「使用技巧」弹窗，可通过底部按钮或 F1 查看快捷操作与隐藏功能；使用宽版窗口并适配屏幕，方便阅读。",
   "downloadUrl": "https://github.com/UUxxXxxUU/SyncTool/releases",
-  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.0.6",
-  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.0.6/RemoteReleaseSync-1.0.6-windows-x64-setup.exe",
+  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.0.7",
+  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.0.7/RemoteReleaseSync-1.0.7-windows-x64-setup.exe",
   "sections": [
     {
       "title": "新增功能",
       "items": [
-        "发布包新增 Windows 安装程序（setup.exe），默认按当前用户安装，无需管理员权限。",
-        "状态栏新增【无感更新】选项（默认关闭）：启用后发现新版本会在后台下载并校验安装包，没有同步任务运行时自动安装到当前程序目录并重启程序。",
-        "检查更新对话框支持程序内下载安装包、显示下载进度，校验 SHA256 后一键安装并自动重启。",
-        "更新对话框与“已是最新版本”提示中提供历史版本下载入口。"
+        "底部状态栏新增「使用技巧」按钮，并支持按 F1 打开功能介绍弹窗。",
+        "集中介绍双击复制主机名、Ctrl 点击打开共享目录、右键复制、选中主机载入编辑区、悬停查看文件记录和同步详情、目录历史，以及托盘与退出操作。"
       ]
     },
     {
       "title": "优化改进",
       "items": [
-        "检查更新对话框重新设计，更新说明按“修复问题 / 新增功能 / 优化改进”分类折叠展示，并可前往发布页查看更多。",
-        "更新时先移除当前目录中的旧版程序文件，保留 sync_config.json 配置。"
+        "使用技巧窗口采用 1080×760 的宽版布局，并根据当前屏幕可用空间自动调整大小，减少文字换行和滚动。",
+        "重复点击使用技巧入口会激活已有窗口，关闭后可再次打开。"
       ]
     }
   ]

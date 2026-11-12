@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <memory>
 #include <QAbstractItemView>
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
@@ -38,6 +39,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -830,6 +832,15 @@ void MainWindow::setupUi()
 
     setCentralWidget(central);
 
+    auto *usageTipsButton = new QPushButton("使用技巧", this);
+    usageTipsButton->setToolTip("查看快捷操作和隐藏功能（F1）");
+    statusBar()->addPermanentWidget(usageTipsButton);
+    connect(usageTipsButton, &QPushButton::clicked, this, &MainWindow::showUsageTips);
+    auto *usageTipsAction = new QAction(this);
+    usageTipsAction->setShortcut(QKeySequence(Qt::Key_F1));
+    addAction(usageTipsAction);
+    connect(usageTipsAction, &QAction::triggered, this, &MainWindow::showUsageTips);
+
     m_checkUpdatesOnStartupCheck = new QCheckBox("启动时检查更新", this);
     m_checkUpdatesOnStartupCheck->setToolTip("下次启动时额外检查更新；每 2 小时的定时检查始终运行。");
     statusBar()->addPermanentWidget(m_checkUpdatesOnStartupCheck);
@@ -906,6 +917,102 @@ void MainWindow::setupUi()
     });
     connect(m_releaseDirEdit->lineEdit(), &QLineEdit::editingFinished, this, &MainWindow::onReleaseDirEditFinished);
     connect(m_releaseDirEdit, QOverload<int>::of(&QComboBox::activated), this, &MainWindow::onReleaseDirEditFinished);
+}
+
+void MainWindow::showUsageTips()
+{
+    if (m_isClosing) {
+        return;
+    }
+    if (m_usageTipsDialog != nullptr) {
+        m_usageTipsDialog->showNormal();
+        m_usageTipsDialog->raise();
+        m_usageTipsDialog->activateWindow();
+        return;
+    }
+
+    auto *dialog = new QDialog(this);
+    m_usageTipsDialog = dialog;
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle("使用技巧 · 快捷操作与隐藏功能");
+    dialog->setWindowFlags(dialog->windowFlags() & ~Qt::WindowContextHelpButtonHint);
+    QScreen *screen = QGuiApplication::screenAt(frameGeometry().center());
+    if (screen == nullptr) {
+        screen = QGuiApplication::primaryScreen();
+    }
+    const QSize available = screen != nullptr
+        ? screen->availableGeometry().size() - QSize(64, 80) : QSize(1080, 760);
+    dialog->resize(QSize(1080, 760).boundedTo(available));
+    auto *layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(20, 20, 20, 16);
+    layout->setSpacing(12);
+
+    auto *heading = new QLabel("让日常同步更顺手", dialog);
+    QFont headingFont = heading->font();
+    headingFont.setPointSize(headingFont.pointSize() + 3);
+    headingFont.setBold(true);
+    heading->setFont(headingFont);
+    layout->addWidget(heading);
+    auto *intro = new QLabel("这些操作已内置在软件中。随时点击底部「使用技巧」或按 F1 查看。", dialog);
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+
+    auto *scroll = new QScrollArea(dialog);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto *content = new QWidget(scroll);
+    auto *contentLayout = new QVBoxLayout(content);
+    contentLayout->setContentsMargins(0, 0, 8, 0);
+    contentLayout->setSpacing(12);
+
+    auto addSection = [content, contentLayout](const QString &title) {
+        auto *group = new QGroupBox(title, content);
+        auto *form = new QFormLayout(group);
+        form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        form->setHorizontalSpacing(18);
+        form->setVerticalSpacing(12);
+        form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        contentLayout->addWidget(group);
+        return form;
+    };
+    auto addTip = [content](QFormLayout *form, const QString &gesture, const QString &description) {
+        auto *label = new QLabel(gesture, content);
+        QFont font = label->font();
+        font.setBold(true);
+        label->setFont(font);
+        auto *detail = new QLabel(description, content);
+        detail->setWordWrap(true);
+        detail->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        form->addRow(label, detail);
+    };
+
+    auto *hosts = addSection("主机操作");
+    addTip(hosts, "双击名称 / 共享目录", "复制共享路径中的主机名到剪贴板。例如 \\\\SERVER\\share 会复制 SERVER，而非自定义显示名称。");
+    addTip(hosts, "Ctrl + 点击共享目录", "在 Windows 资源管理器中打开该共享目录。");
+    addTip(hosts, "右键点击主机行", "选择「复制主机名」，也可完成复制。");
+    addTip(hosts, "选中主机行", "将该主机的信息载入上方编辑区；修改后点击「更新选中主机」保存。");
+
+    auto *previews = addSection("预览与详情");
+    addTip(previews, "悬停在进度条上", "查看本轮文件处理记录。可将鼠标移入浮窗，滚动阅读较长的列表。");
+    addTip(previews, "悬停在详情列上", "查看完整同步详情；移入浮窗后可滚动阅读。");
+    addTip(previews, "展开 Release 目录下拉框", "快速切换最近使用过的本地目录，最多保留 20 条记录。");
+
+    auto *tray = addSection("托盘与退出");
+    addTip(tray, "点击主窗口关闭按钮 ×", "隐藏到系统托盘，程序继续在后台运行。");
+    addTip(tray, "Ctrl + 点击关闭按钮 ×", "完全退出软件；如有后台任务，会先停止任务再退出。");
+    addTip(tray, "双击系统托盘图标", "恢复并显示主界面。也可右键图标，选择「显示主界面」或「退出」。");
+
+    contentLayout->addStretch();
+    scroll->setWidget(content);
+    layout->addWidget(scroll, 1);
+    auto *buttonRow = new QHBoxLayout();
+    buttonRow->addStretch();
+    auto *closeButton = new QPushButton("知道了", dialog);
+    closeButton->setDefault(true);
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::accept);
+    buttonRow->addWidget(closeButton);
+    layout->addLayout(buttonRow);
+    dialog->show();
 }
 
 void MainWindow::checkForUpdates()
