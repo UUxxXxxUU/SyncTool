@@ -44,6 +44,7 @@ QT_END_NAMESPACE
 
 class SyncWorker;
 class RecentCopyPreview;
+namespace Ui { class MainWindow; }
 
 // 更新说明中的一个分类，例如“修复问题”“新增功能”。
 struct UpdateNoteSection
@@ -57,7 +58,7 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    explicit MainWindow(QWidget *parent = nullptr, const QString &configPath = QString());
     ~MainWindow() override;
 
 protected:
@@ -103,6 +104,11 @@ private:
 
     void setupUi();
     void showUsageTips();
+    void editSyncRule(bool editExisting);
+    void removeSyncRule();
+    void refreshRuleTable();
+    void updateRulePreview();
+    void syncRulesChanged();
     void startUpdateCheck(bool interactive);
     void requestUpdateInfo(bool useRawFallback);
     void finishUpdateCheck(const QString &errorMessage = QString());
@@ -152,6 +158,7 @@ private:
     bool isSystemAutoStartEnabled() const;
     bool setSystemAutoStartEnabled(bool enabled, QString *errorMessage = nullptr) const;
 
+    std::unique_ptr<Ui::MainWindow> m_ui;
     AppConfig m_config;
     QString m_configPath;
     QString m_lastFingerprint;

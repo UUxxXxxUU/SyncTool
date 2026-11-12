@@ -1,0 +1,389 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ui version="4.0">
+  <class>UsageTipsDialog</class>
+  <widget class="QDialog" name="UsageTipsDialog">
+    <property name="windowTitle">
+      <string>使用技巧 · 快捷操作与隐藏功能</string>
+    </property>
+    <layout class="QVBoxLayout" name="layout">
+      <property name="leftMargin">
+        <number>20</number>
+      </property>
+      <property name="topMargin">
+        <number>20</number>
+      </property>
+      <property name="rightMargin">
+        <number>20</number>
+      </property>
+      <property name="bottomMargin">
+        <number>16</number>
+      </property>
+      <property name="spacing">
+        <number>12</number>
+      </property>
+      <item>
+        <widget class="QLabel" name="heading">
+          <property name="font">
+            <font>
+              <pointsize>14</pointsize>
+              <bold>true</bold>
+            </font>
+          </property>
+          <property name="text">
+            <string>让日常同步更顺手</string>
+          </property>
+        </widget>
+      </item>
+      <item>
+        <widget class="QLabel" name="intro">
+          <property name="text">
+            <string>随时点击底部「使用技巧」或按 F1 查看。附加规则可同步 Release 内部或同级目录。</string>
+          </property>
+          <property name="wordWrap">
+            <bool>true</bool>
+          </property>
+        </widget>
+      </item>
+      <item>
+        <widget class="QScrollArea" name="scrollArea">
+          <property name="widgetResizable">
+            <bool>true</bool>
+          </property>
+          <property name="frameShape">
+            <enum>QFrame::NoFrame</enum>
+          </property>
+          <widget class="QWidget" name="content">
+            <layout class="QVBoxLayout" name="contentLayout">
+              <item>
+                <widget class="QGroupBox" name="section1">
+                  <property name="title">
+                    <string>主机操作</string>
+                  </property>
+                  <layout class="QFormLayout" name="form1">
+                    <property name="rowWrapPolicy">
+                      <enum>QFormLayout::WrapLongRows</enum>
+                    </property>
+                    <property name="horizontalSpacing">
+                      <number>18</number>
+                    </property>
+                    <property name="verticalSpacing">
+                      <number>12</number>
+                    </property>
+                    <item row="0" column="0">
+                      <widget class="QLabel" name="gesture1_0">
+                        <property name="font">
+                          <font>
+                            <bold>true</bold>
+                          </font>
+                        </property>
+                        <property name="text">
+                          <string>双击名称 / 共享目录</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="0" column="1">
+                      <widget class="QLabel" name="detail1_0">
+                        <property name="text">
+                          <string>复制共享路径中的主机名到剪贴板。例如 \\SERVER\share 会复制 SERVER，而非自定义显示名称。</string>
+                        </property>
+                        <property name="wordWrap">
+                          <bool>true</bool>
+                        </property>
+                        <property name="textInteractionFlags">
+                          <set>Qt::TextSelectableByMouse</set>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="1" column="0">
+                      <widget class="QLabel" name="gesture1_1">
+                        <property name="font">
+                          <font>
+                            <bold>true</bold>
+                          </font>
+                        </property>
+                        <property name="text">
+                          <string>Ctrl + 点击共享目录</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="1" column="1">
+                      <widget class="QLabel" name="detail1_1">
+                        <property name="text">
+                          <string>在 Windows 资源管理器中打开该共享目录。</string>
+                        </property>
+                        <property name="wordWrap">
+                          <bool>true</bool>
+                        </property>
+                        <property name="textInteractionFlags">
+                          <set>Qt::TextSelectableByMouse</set>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="2" column="0">
+                      <widget class="QLabel" name="gesture1_2">
+                        <property name="font">
+                          <font>
+                            <bold>true</bold>
+                          </font>
+                        </property>
+                        <property name="text">
+                          <string>右键点击主机行</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="2" column="1">
+                      <widget class="QLabel" name="detail1_2">
+                        <property name="text">
+                          <string>选择「复制主机名」，也可完成复制。</string>
+                        </property>
+                        <property name="wordWrap">
+                          <bool>true</bool>
+                        </property>
+                        <property name="textInteractionFlags">
+                          <set>Qt::TextSelectableByMouse</set>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="3" column="0">
+                      <widget class="QLabel" name="gesture1_3">
+                        <property name="font">
+                          <font>
+                            <bold>true</bold>
+                          </font>
+                        </property>
+                        <property name="text">
+                          <string>选中主机行</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="3" column="1">
+                      <widget class="QLabel" name="detail1_3">
+                        <property name="text">
+                          <string>将该主机的信息载入上方编辑区；修改后点击「更新选中主机」保存。</string>
+                        </property>
+                        <property name="wordWrap">
+                          <bool>true</bool>
+                        </property>
+                        <property name="textInteractionFlags">
+                          <set>Qt::TextSelectableByMouse</set>
+                        </property>
+                      </widget>
+                    </item>
+                  </layout>
+                </widget>
+              </item>
+              <item>
+                <widget class="QGroupBox" name="section2">
+                  <property name="title">
+                    <string>预览与详情</string>
+                  </property>
+                  <layout class="QFormLayout" name="form2">
+                    <property name="rowWrapPolicy">
+                      <enum>QFormLayout::WrapLongRows</enum>
+                    </property>
+                    <property name="horizontalSpacing">
+                      <number>18</number>
+                    </property>
+                    <property name="verticalSpacing">
+                      <number>12</number>
+                    </property>
+                    <item row="0" column="0">
+                      <widget class="QLabel" name="gesture2_0">
+                        <property name="font">
+                          <font>
+                            <bold>true</bold>
+                          </font>
+                        </property>
+                        <property name="text">
+                          <string>悬停在进度条上</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="0" column="1">
+                      <widget class="QLabel" name="detail2_0">
+                        <property name="text">
+                          <string>查看本轮文件处理记录。可将鼠标移入浮窗，滚动阅读较长的列表。</string>
+                        </property>
+                        <property name="wordWrap">
+                          <bool>true</bool>
+                        </property>
+                        <property name="textInteractionFlags">
+                          <set>Qt::TextSelectableByMouse</set>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="1" column="0">
+                      <widget class="QLabel" name="gesture2_1">
+                        <property name="font">
+                          <font>
+                            <bold>true</bold>
+                          </font>
+                        </property>
+                        <property name="text">
+                          <string>悬停在详情列上</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="1" column="1">
+                      <widget class="QLabel" name="detail2_1">
+                        <property name="text">
+                          <string>查看完整同步详情；移入浮窗后可滚动阅读。</string>
+                        </property>
+                        <property name="wordWrap">
+                          <bool>true</bool>
+                        </property>
+                        <property name="textInteractionFlags">
+                          <set>Qt::TextSelectableByMouse</set>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="2" column="0">
+                      <widget class="QLabel" name="gesture2_2">
+                        <property name="font">
+                          <font>
+                            <bold>true</bold>
+                          </font>
+                        </property>
+                        <property name="text">
+                          <string>展开 Release 目录下拉框</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="2" column="1">
+                      <widget class="QLabel" name="detail2_2">
+                        <property name="text">
+                          <string>快速切换最近使用过的本地目录，最多保留 20 条记录。</string>
+                        </property>
+                        <property name="wordWrap">
+                          <bool>true</bool>
+                        </property>
+                        <property name="textInteractionFlags">
+                          <set>Qt::TextSelectableByMouse</set>
+                        </property>
+                      </widget>
+                    </item>
+                  </layout>
+                </widget>
+              </item>
+              <item>
+                <widget class="QGroupBox" name="section3">
+                  <property name="title">
+                    <string>托盘与退出</string>
+                  </property>
+                  <layout class="QFormLayout" name="form3">
+                    <property name="rowWrapPolicy">
+                      <enum>QFormLayout::WrapLongRows</enum>
+                    </property>
+                    <property name="horizontalSpacing">
+                      <number>18</number>
+                    </property>
+                    <property name="verticalSpacing">
+                      <number>12</number>
+                    </property>
+                    <item row="0" column="0">
+                      <widget class="QLabel" name="gesture3_0">
+                        <property name="font">
+                          <font>
+                            <bold>true</bold>
+                          </font>
+                        </property>
+                        <property name="text">
+                          <string>点击主窗口关闭按钮 ×</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="0" column="1">
+                      <widget class="QLabel" name="detail3_0">
+                        <property name="text">
+                          <string>隐藏到系统托盘，程序继续在后台运行。</string>
+                        </property>
+                        <property name="wordWrap">
+                          <bool>true</bool>
+                        </property>
+                        <property name="textInteractionFlags">
+                          <set>Qt::TextSelectableByMouse</set>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="1" column="0">
+                      <widget class="QLabel" name="gesture3_1">
+                        <property name="font">
+                          <font>
+                            <bold>true</bold>
+                          </font>
+                        </property>
+                        <property name="text">
+                          <string>Ctrl + 点击关闭按钮 ×</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="1" column="1">
+                      <widget class="QLabel" name="detail3_1">
+                        <property name="text">
+                          <string>完全退出软件；如有后台任务，会先停止任务再退出。</string>
+                        </property>
+                        <property name="wordWrap">
+                          <bool>true</bool>
+                        </property>
+                        <property name="textInteractionFlags">
+                          <set>Qt::TextSelectableByMouse</set>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="2" column="0">
+                      <widget class="QLabel" name="gesture3_2">
+                        <property name="font">
+                          <font>
+                            <bold>true</bold>
+                          </font>
+                        </property>
+                        <property name="text">
+                          <string>双击系统托盘图标</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="2" column="1">
+                      <widget class="QLabel" name="detail3_2">
+                        <property name="text">
+                          <string>恢复并显示主界面。也可右键图标，选择「显示主界面」或「退出」。</string>
+                        </property>
+                        <property name="wordWrap">
+                          <bool>true</bool>
+                        </property>
+                        <property name="textInteractionFlags">
+                          <set>Qt::TextSelectableByMouse</set>
+                        </property>
+                      </widget>
+                    </item>
+                  </layout>
+                </widget>
+              </item>
+              <item>
+                <spacer name="spacer">
+                  <property name="orientation">
+                    <enum>Qt::Vertical</enum>
+                  </property>
+                  <property name="sizeHint" stdset="0">
+                    <size>
+                      <width>20</width>
+                      <height>10</height>
+                    </size>
+                  </property>
+                </spacer>
+              </item>
+            </layout>
+          </widget>
+        </widget>
+      </item>
+      <item>
+        <widget class="QDialogButtonBox" name="buttonBox">
+          <property name="standardButtons">
+            <set>QDialogButtonBox::Ok</set>
+          </property>
+        </widget>
+      </item>
+    </layout>
+  </widget>
+  <resources />
+  <connections />
+</ui>
