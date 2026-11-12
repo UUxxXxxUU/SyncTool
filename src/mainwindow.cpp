@@ -482,10 +482,11 @@ QString formatMegabytes(qint64 bytes)
 }
 }
 
-MainWindow::MainWindow(QWidget *parent, const QString &configPath)
+MainWindow::MainWindow(QWidget *parent, const QString &configPath, bool manageSystemStartup)
     : QMainWindow(parent)
     , m_ui(new Ui::MainWindow)
     , m_configPath(configPath.isEmpty() ? ConfigManager::defaultConfigPath() : configPath)
+    , m_manageSystemStartup(manageSystemStartup)
 {
     setupUi();
     m_copyPreview = new RecentCopyPreview(this);
@@ -1774,13 +1775,13 @@ void MainWindow::addToReleaseDirHistory(const QString &path)
 void MainWindow::loadConfiguration()
 {
     m_config = ConfigManager::load(m_configPath);
-    const bool systemAutoStartEnabled = isSystemAutoStartEnabled();
-    if (m_config.startWithSystem && !systemAutoStartEnabled) {
+    const bool systemAutoStartEnabled = m_manageSystemStartup && isSystemAutoStartEnabled();
+    if (m_manageSystemStartup && m_config.startWithSystem && !systemAutoStartEnabled) {
         QString error;
         if (!setSystemAutoStartEnabled(true, &error)) {
             m_config.startWithSystem = false;
         }
-    } else if (!m_config.startWithSystem && systemAutoStartEnabled) {
+    } else if (m_manageSystemStartup && !m_config.startWithSystem && systemAutoStartEnabled) {
         m_config.startWithSystem = true;
     }
     applyConfigToUi();
@@ -2101,7 +2102,7 @@ void MainWindow::saveConfiguration()
         QMessageBox::warning(this, "保存失败", QString("配置文件写入失败：%1").arg(error));
         return;
     }
-    if (!setSystemAutoStartEnabled(m_config.startWithSystem, &error)) {
+    if (m_manageSystemStartup && !setSystemAutoStartEnabled(m_config.startWithSystem, &error)) {
         QMessageBox::warning(this, "自启设置失败", QString("开机自启设置写入失败：%1").arg(error));
         return;
     }
