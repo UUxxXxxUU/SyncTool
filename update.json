@@ -1,23 +1,35 @@
 {
-  "version": "1.0.7",
-  "notes": "新增「使用技巧」弹窗，可通过底部按钮或 F1 查看快捷操作与隐藏功能；使用宽版窗口并适配屏幕，方便阅读。",
-  "downloadUrl": "https://github.com/UUxxXxxUU/SyncTool/releases",
-  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.0.7",
-  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.0.7/RemoteReleaseSync-1.0.7-windows-x64-setup.exe",
-  "sections": [
-    {
-      "title": "新增功能",
-      "items": [
-        "底部状态栏新增「使用技巧」按钮，并支持按 F1 打开功能介绍弹窗。",
-        "集中介绍双击复制主机名、Ctrl 点击打开共享目录、右键复制、选中主机载入编辑区、悬停查看文件记录和同步详情、目录历史，以及托盘与退出操作。"
-      ]
-    },
-    {
-      "title": "优化改进",
-      "items": [
-        "使用技巧窗口采用 1080×760 的宽版布局，并根据当前屏幕可用空间自动调整大小，减少文字换行和滚动。",
-        "重复点击使用技巧入口会激活已有窗口，关闭后可再次打开。"
-      ]
-    }
-  ]
+    "version":  "1.0.8",
+    "notes":  "新增附加同步规则：以两端 Release 为基准，支持 ./image、../Lang 等相对路径、独立类型筛选和全部文件同步；界面迁移为可用 Qt Designer 编辑的 .ui 文件。",
+    "downloadUrl":  "https://github.com/UUxxXxxUU/SyncTool/releases",
+    "releaseUrl":  "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.0.8",
+    "installerUrl":  "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.0.8/RemoteReleaseSync-1.0.8-windows-x64-setup.exe",
+    "sections":  [
+                     {
+                         "items":  [
+                                       "本地配置增加「基本同步 / 附加同步规则」Tab，主机状态始终显示。",
+                                       "规则路径同时相对于本地与远端 Release，支持内部目录、同级目录、多级相对路径及单个文件，目录规则递归包含子目录中的文件。",
+                                       "每条规则可独立选择文件类型，多种类型用分号分隔；留空同步全部文件，包括无扩展名文件。",
+                                       "支持规则添加、编辑、删除、启用和停用，浏览选择文件或目录，并预览本地和远端实际路径。",
+                                       "自动同步、手动同步和状态检查覆盖所有启用规则，重叠选中的文件只复制一次。"
+                                   ],
+                         "title":  "新增功能"
+                     },
+                     {
+                         "items":  [
+                                       "主窗口、规则编辑、使用技巧、更新弹窗和悬停预览的固定布局迁移到 .ui，支持 Qt Designer 编辑。",
+                                       "兼容原配置，可取消全部基本类型后仅使用附加规则；远端多余文件继续保留。",
+                                       "复制后重新扫描远端校验结果，进度和文件记录汇总所有规则；目标路径必须保留在同一共享目录内。",
+                                       "未填写账号密码时复用 Windows 当前可访问的共享连接，避免提交空密码。",
+                                       "小屏幕或高缩放下，上方配置区可滚动，主机状态表始终保留可见空间。"
+                                   ],
+                         "title":  "优化改进"
+                     },
+                     {
+                         "items":  [
+                                       "修复窗口销毁时输入框失去焦点再次触发配置保存的问题。"
+                                   ],
+                         "title":  "修复问题"
+                     }
+                 ]
 }

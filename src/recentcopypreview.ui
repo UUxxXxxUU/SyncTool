@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RecentCopyPreview</class>
+ <widget class="QFrame" name="recentCopyPreview">
+  <property name="styleSheet"><string>QLabel { color: #20252b; background: transparent; border: none; }
+QPlainTextEdit { color: #20252b; background: transparent; border: none; }</string></property>
+  <layout class="QVBoxLayout" name="layout">
+   <item><widget class="QLabel" name="titleLabel"><property name="text"><string>本轮拷贝预览</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+   <item><widget class="QPlainTextEdit" name="textEdit"><property name="focusPolicy"><enum>Qt::NoFocus</enum></property><property name="readOnly"><bool>true</bool></property><property name="horizontalScrollBarPolicy"><enum>Qt::ScrollBarAlwaysOff</enum></property></widget></item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Generated Files">
@@ -65,5 +65,14 @@
     <QtRcc Include="resources\app.qrc">
       <Filter>Resource Files</Filter>
     </QtRcc>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\syncplan.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="src\syncplan.h"><Filter>Header Files</Filter></ClInclude>
+    <QtUic Include="src\mainwindow.ui"><Filter>Resource Files</Filter></QtUic>
+    <QtUic Include="src\syncruledialog.ui"><Filter>Resource Files</Filter></QtUic>
+    <QtUic Include="src\usagetipsdialog.ui"><Filter>Resource Files</Filter></QtUic>
+    <QtUic Include="src\recentcopypreview.ui"><Filter>Resource Files</Filter></QtUic>
+    <QtUic Include="src\updatedialog.ui"><Filter>Resource Files</Filter></QtUic>
   </ItemGroup>
 </Project>

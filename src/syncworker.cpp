@@ -5,6 +5,8 @@
 #include <QByteArray>
 #include <QDir>
 #include <QDirIterator>
+#include <QElapsedTimer>
+#include <QMap>
 #include <QFileInfo>
 #include <QHash>
 #include <QMutex>
@@ -23,12 +25,7 @@
 
 namespace
 {
-struct RemoteFile
-{
-    QString absolutePath;
-    qint64 size = 0;
-    qint64 modifiedMs = 0;
-};
+using RemoteFile = SyncPlan::File;
 
 struct PendingCopy
 {
@@ -37,15 +34,6 @@ struct PendingCopy
     QString relativePath;
     qint64 size = 0;
 };
-
-QString normalizeExtension(const QString &value)
-{
-    QString type = value.trimmed().toLower();
-    while (type.startsWith('.')) {
-        type.remove(0, 1);
-    }
-    return type;
-}
 
 QString normalizeQtPath(const QString &value)
 {
@@ -88,62 +76,6 @@ QString hostDisplayName(const HostEntry &host)
     }
 
     return host.sharePath;
-}
-
-QHash<QString, SyncWorker::LocalFile> collectLocalFiles(const QString &rootPath, const QSet<QString> &types, const SyncWorker *worker)
-{
-    QHash<QString, SyncWorker::LocalFile> files;
-    QDirIterator iterator(rootPath, QDir::Files, QDirIterator::Subdirectories);
-    const QDir baseDir(rootPath);
-
-    while (iterator.hasNext()) {
-        if (worker != nullptr && worker->isCancelled()) {
-            break;
-        }
-
-        iterator.next();
-        const QFileInfo info = iterator.fileInfo();
-        if (!types.contains(info.suffix().toLower())) {
-            continue;
-        }
-
-        SyncWorker::LocalFile file;
-        file.absolutePath = info.absoluteFilePath();
-        file.relativePath = QDir::cleanPath(baseDir.relativeFilePath(info.absoluteFilePath())).replace('\\', '/');
-        file.size = info.size();
-        file.modifiedMs = info.lastModified().toMSecsSinceEpoch();
-        files.insert(file.relativePath, file);
-    }
-
-    return files;
-}
-
-QHash<QString, RemoteFile> collectRemoteFiles(const QString &rootPath, const QSet<QString> &types, const SyncWorker *worker)
-{
-    QHash<QString, RemoteFile> files;
-    QDirIterator iterator(rootPath, QDir::Files, QDirIterator::Subdirectories);
-    const QDir baseDir(rootPath);
-
-    while (iterator.hasNext()) {
-        if (worker != nullptr && worker->isCancelled()) {
-            break;
-        }
-
-        iterator.next();
-        const QFileInfo info = iterator.fileInfo();
-        if (!types.contains(info.suffix().toLower())) {
-            continue;
-        }
-
-        RemoteFile file;
-        file.absolutePath = info.absoluteFilePath();
-        file.size = info.size();
-        file.modifiedMs = info.lastModified().toMSecsSinceEpoch();
-        const QString relativePath = QDir::cleanPath(baseDir.relativeFilePath(info.absoluteFilePath())).replace('\\', '/');
-        files.insert(relativePath, file);
-    }
-
-    return files;
 }
 
 bool sameFile(const SyncWorker::LocalFile &local, const RemoteFile &remote)
@@ -242,17 +174,6 @@ int recommendedRobocopyThreads(const QVector<PendingCopy> &pendingCopies)
 
     // 线程过多会占满到同一主机的 SMB 通道，导致资源管理器浏览该共享时长时间无响应。
     return qMin(pendingCount, qBound(8, threadCount, 32));
-}
-
-QStringList robocopyPatterns(const QSet<QString> &types)
-{
-    QStringList patterns;
-    for (const QString &type : types) {
-        patterns.append(QString("*.%1").arg(type));
-    }
-    patterns.removeDuplicates();
-    std::sort(patterns.begin(), patterns.end());
-    return patterns;
 }
 
 QString formatBytes(qint64 bytes)
@@ -408,6 +329,11 @@ bool connectShare(const QString &fullPath, const QString &username, const QStrin
         return true;
     }
 
+    // 未填写凭据时使用 Windows 当前会话，避免向已可访问的共享提交空密码。
+    if (username.isEmpty() && password.isEmpty() && isShareAccessible(rootPath)) {
+        return true;
+    }
+
     if (isCreatedShareConnection(rootPath) && isShareAccessible(rootPath)) {
         return true;
     }
@@ -423,7 +349,7 @@ bool connectShare(const QString &fullPath, const QString &username, const QStrin
 
     auto tryConnect = [&]() -> DWORD {
         return WNetAddConnection2W(&resource,
-                                   password.isEmpty() ? L"" : passValue.c_str(),
+                                   password.isEmpty() ? (username.isEmpty() ? nullptr : L"") : passValue.c_str(),
                                    username.isEmpty() ? nullptr : userValue.c_str(),
                                    0);
     };
@@ -468,197 +394,110 @@ bool connectShare(const QString &fullPath, const QString &username, const QStrin
     return false;
 }
 
-bool runRobocopy(SyncWorker *worker,
-                 const QString &localRoot,
-                 const QString &remoteRoot,
-                 const QVector<PendingCopy> &pendingCopies,
-                 const QSet<QString> &types,
-                 int threadCount,
-                 QString *error)
+// Copy only the planned files. Per-directory batches also support ../ rules and
+// overlapping filters without copying a file twice or widening the selected scope.
+bool runRobocopy(SyncWorker *worker, const QString &localBase,
+                 const QVector<PendingCopy> &pendingCopies, int threadCount, QString *error)
 {
-    if (worker == nullptr || worker->isCancelled()) {
-        if (error != nullptr) {
-            *error = QString("同步未启动或已被用户停止");
-        }
-        return false;
-    }
-
-    if (pendingCopies.isEmpty()) {
-        return true;
-    }
-
-    QStringList arguments;
-    arguments << nativePath(localRoot) << nativePath(remoteRoot);
-    arguments.append(robocopyPatterns(types));
-    arguments << "/S"
-              << "/FFT"
-              << "/R:0"
-              << "/W:0"
-              << QString("/MT:%1").arg(threadCount)
-              << "/COPY:DAT"
-              << "/DCOPY:DA"
-              << "/XX"
-              << "/FP"
-              << "/NC"
-              << "/NS"
-              << "/NDL"
-              << "/NJH"
-              << "/NJS"
-              << "/NP";
-
-    QHash<QString, QString> relativePaths;
-    QStringList pendingFiles;
+    struct Batch { QString sourceDir; QString destinationDir; QVector<PendingCopy> files; };
+    QVector<Batch> batches;
+    QMap<QString, QVector<PendingCopy>> groups;
     qint64 totalBytes = 0;
+    QStringList pendingFiles;
     for (const PendingCopy &copy : pendingCopies) {
+        const QString key = QFileInfo(copy.sourcePath).absolutePath().toCaseFolded() + '\n'
+            + QFileInfo(copy.destinationPath).absolutePath().toCaseFolded();
+        groups[key].append(copy);
         totalBytes += copy.size;
-        relativePaths.insert(normalizeQtPath(copy.sourcePath).toCaseFolded(), copy.relativePath);
         pendingFiles.append(copy.relativePath);
     }
-    if (pendingCopies.size() > 0 && totalBytes / pendingCopies.size() >= 32 * 1024 * 1024) {
-        arguments << "/J";
+    for (auto group = groups.begin(); group != groups.end(); ++group) {
+        auto &files = group.value();
+        std::sort(files.begin(), files.end(), [](const PendingCopy &a, const PendingCopy &b) { return a.relativePath < b.relativePath; });
+        Batch batch;
+        batch.sourceDir = QFileInfo(files.first().sourcePath).absolutePath();
+        batch.destinationDir = QFileInfo(files.first().destinationPath).absolutePath();
+        int commandLength = batch.sourceDir.size() + batch.destinationDir.size() + 512;
+        for (const PendingCopy &copy : files) {
+            const int nameLength = QFileInfo(copy.sourcePath).fileName().size() + 3;
+            if (!batch.files.isEmpty() && commandLength + nameLength > 24000) {
+                batches.append(batch);
+                batch.files.clear();
+                commandLength = batch.sourceDir.size() + batch.destinationDir.size() + 512;
+            }
+            batch.files.append(copy);
+            commandLength += nameLength;
+        }
+        if (!batch.files.isEmpty()) batches.append(batch);
     }
-
     pendingFiles.sort(Qt::CaseInsensitive);
     worker->emitRecentFiles(pendingFiles, QString("本轮待复制文件（共 %1 个）").arg(pendingFiles.size()));
-
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    process.start("robocopy", arguments);
-    if (!process.waitForStarted(5000)) {
-        worker->emitRecentFiles(QStringList(), "本轮处理记录（启动失败，共 0 个）");
-        if (error != nullptr) {
+    QStringList processed;
+    qint64 completedBytes = 0;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    for (int batchIndex = 0; batchIndex < batches.size(); ++batchIndex) {
+        if (worker->isCancelled()) { *error = "同步已被用户取消"; return false; }
+        const Batch &batch = batches.at(batchIndex);
+        QStringList arguments{nativePath(batch.sourceDir), nativePath(batch.destinationDir)};
+        qint64 batchBytes = 0;
+        for (const PendingCopy &copy : batch.files) {
+            arguments.append(QFileInfo(copy.sourcePath).fileName());
+            batchBytes += copy.size;
+        }
+        // No /S: the explicit file list is scoped to this one directory.
+        arguments << "/FFT" << "/R:0" << "/W:0" << QString("/MT:%1").arg(qMax(1, threadCount))
+                  << "/COPY:DAT" << "/DCOPY:DA" << "/XX" << "/FP" << "/NC" << "/NS"
+                  << "/NDL" << "/NJH" << "/NJS" << "/NP";
+        if (!batch.files.isEmpty() && batchBytes / batch.files.size() >= 32 * 1024 * 1024) arguments << "/J";
+        QProcess process;
+        process.setProcessChannelMode(QProcess::MergedChannels);
+        process.start("robocopy", arguments);
+        if (!process.waitForStarted(5000)) {
             *error = QString("无法启动 robocopy：%1").arg(process.errorString());
-        }
-        return false;
-    }
-
-    QByteArray rawOutput;
-    QByteArray diagnosticOutput;
-    int outputOffset = 0;
-    int lineStart = 0;
-    QStringList processedFiles;
-    auto readOutput = [&](bool flush) {
-        rawOutput.append(process.readAllStandardOutput());
-        auto recordLine = [&](int lineEnd) {
-            const QString line = QString::fromLocal8Bit(rawOutput.constData() + lineStart, lineEnd - lineStart).trimmed();
-            const auto pathIt = relativePaths.constFind(normalizeQtPath(line).toCaseFolded());
-            if (pathIt == relativePaths.constEnd()) {
-                diagnosticOutput.append(rawOutput.constData() + lineStart, lineEnd - lineStart);
-                diagnosticOutput.append('\n');
-                return;
-            }
-            processedFiles.append(pathIt.value());
-        };
-
-        // 按完整行解码，避免中文跨输出块时被截断；文件记录不参与错误码解析。
-        while (outputOffset < rawOutput.size()) {
-            const char character = rawOutput.at(outputOffset);
-            if (character == '\r' || character == '\n') {
-                if (outputOffset > lineStart) {
-                    recordLine(outputOffset);
-                }
-                lineStart = outputOffset + 1;
-            }
-            ++outputOffset;
-        }
-        if (flush && lineStart < rawOutput.size()) {
-            recordLine(rawOutput.size());
-            lineStart = rawOutput.size();
-        }
-    };
-    auto emitProcessedFiles = [&](const QString &state) {
-        QStringList files;
-        QSet<QString> seen;
-        for (int index = processedFiles.size() - 1; index >= 0; --index) {
-            const QString &path = processedFiles.at(index);
-            if (!seen.contains(path)) {
-                seen.insert(path);
-                files.append(path);
-            }
-        }
-        const QString title = state.isEmpty()
-            ? QString("本轮处理记录（共 %1 个，最新在前）").arg(files.size())
-            : QString("本轮处理记录（%1，共 %2 个，最新在前）").arg(state).arg(files.size());
-        worker->emitRecentFiles(files, title);
-    };
-
-    // /MT 多线程下各文件并行复制、几乎同时完成，按文件个数统计会从 0 直接跳到 100；
-    // 目标文件又会被预分配到完整大小，也无法按目标文件大小统计。
-    // 因此读取 robocopy 进程累计写入字节数（GetProcessIoCounters）作为真实复制进度。
-    HANDLE processHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(process.processId()));
-    struct HandleCloser
-    {
-        HANDLE handle;
-        ~HandleCloser()
-        {
-            if (handle != nullptr) {
-                CloseHandle(handle);
-            }
-        }
-    } handleCloser{processHandle};
-
-    qint64 writtenBytes = 0;
-    int elapsedSeconds = 0;
-    int elapsedTicks = 0;
-    auto emitCopyProgress = [&]() {
-        IO_COUNTERS counters = {};
-        if (processHandle != nullptr && GetProcessIoCounters(processHandle, &counters)) {
-            writtenBytes = qMin(static_cast<qint64>(counters.WriteTransferCount), totalBytes);
-        }
-        const int percent = totalBytes > 0 ? static_cast<int>(writtenBytes * 99 / totalBytes) : 0;
-        worker->emitProgress(qMax(1, percent),
-                             QString("robocopy 同步中，%1 线程，%2 个文件，已复制 %3 / %4，已运行 %5 秒")
-                                 .arg(threadCount)
-                                 .arg(pendingCopies.size())
-                                 .arg(formatBytes(writtenBytes))
-                                 .arg(formatBytes(totalBytes))
-                                 .arg(elapsedSeconds));
-    };
-
-    emitCopyProgress();
-
-    // 每 500ms 刷新一次进度并检查取消；进程已结束时 waitForFinished 也返回 false，所以用 state() 判断
-    while (process.state() != QProcess::NotRunning) {
-        if (worker->isCancelled()) {
-            process.kill();
-            process.waitForFinished(3000);
-            readOutput(true);
-            emitProcessedFiles("已取消");
-            if (error != nullptr) {
-                *error = QString("同步已被用户取消");
-            }
             return false;
         }
-        if (process.waitForFinished(500)) {
-            break;
+        HANDLE handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(process.processId()));
+        struct HandleCloser { HANDLE handle; ~HandleCloser() { if (handle) CloseHandle(handle); } } closer{handle};
+        QByteArray output;
+        const QString scope = QDir(localBase).relativeFilePath(batch.sourceDir);
+        auto progress = [&]() {
+            IO_COUNTERS counters = {};
+            const qint64 written = handle && GetProcessIoCounters(handle, &counters)
+                ? qMin(static_cast<qint64>(counters.WriteTransferCount), batchBytes) : 0;
+            const int percent = totalBytes > 0 ? static_cast<int>((completedBytes + written) * 99 / totalBytes)
+                : batchIndex * 99 / qMax(1, batches.size());
+            worker->emitProgress(qBound(0, percent, 99), QString("同步 %1（第 %2/%3 组），已复制 %4 / %5，已运行 %6 秒")
+                .arg(nativePath(scope)).arg(batchIndex + 1).arg(batches.size())
+                .arg(formatBytes(completedBytes + written), formatBytes(totalBytes)).arg(elapsed.elapsed() / 1000));
+        };
+        progress();
+        while (process.state() != QProcess::NotRunning) {
+            if (worker->isCancelled()) {
+                process.kill();
+                process.waitForFinished(3000);
+                worker->emitRecentFiles(processed, QString("本轮处理记录（已取消，共 %1 个）").arg(processed.size()));
+                *error = "同步已被用户取消";
+                return false;
+            }
+            process.waitForFinished(200);
+            output.append(process.readAllStandardOutput());
+            if (output.size() > 65536) output = output.right(65536);
+            progress();
         }
-        readOutput(false);
-        elapsedTicks++;
-        elapsedSeconds = elapsedTicks / 2;
-        emitCopyProgress();
-    }
-
-    readOutput(true);
-    const QString output = QString::fromLocal8Bit(diagnosticOutput);
-    if (process.exitStatus() != QProcess::NormalExit) {
-        emitProcessedFiles("同步失败");
-        if (error != nullptr) {
-            *error = QString("robocopy 异常退出：%1").arg(outputTail(output));
+        output.append(process.readAllStandardOutput());
+        if (process.exitStatus() != QProcess::NormalExit || process.exitCode() >= 8) {
+            *error = QString("%1：%2").arg(nativePath(scope), process.exitStatus() == QProcess::NormalExit
+                ? describeRobocopyFailure(process.exitCode(), QString::fromLocal8Bit(output))
+                : QString("robocopy 异常退出：%1").arg(outputTail(QString::fromLocal8Bit(output))));
+            worker->emitRecentFiles(processed, QString("本轮处理记录（同步失败，共 %1 个）").arg(processed.size()));
+            return false;
         }
-        return false;
+        for (const PendingCopy &copy : batch.files) processed.prepend(copy.relativePath);
+        completedBytes += batchBytes;
+        worker->emitRecentFiles(processed, QString("本轮处理记录（共 %1 个，最新在前）").arg(processed.size()));
     }
-
-    const int exitCode = process.exitCode();
-    if (exitCode >= 8) {
-        emitProcessedFiles("同步失败");
-        if (error != nullptr) {
-            *error = describeRobocopyFailure(exitCode, output);
-        }
-        return false;
-    }
-
-    emitProcessedFiles(worker->isCancelled() ? QString("已取消") : QString());
-    return true;
+    return !worker->isCancelled();
 }
 #endif
 
@@ -680,7 +519,7 @@ SyncWorker::ComparisonSummary compareFiles(const QHash<QString, SyncWorker::Loca
     localPaths.reserve(localFiles.size());
 
     for (auto it = localFiles.constBegin(); it != localFiles.constEnd(); ++it) {
-        const QString relativePath = it.key();
+        const QString relativePath = it.value().relativePath;
         const QString pathKey = relativePath.toCaseFolded();
         localPaths.insert(pathKey);
         const SyncWorker::LocalFile &local = it.value();
@@ -719,7 +558,7 @@ SyncWorker::ComparisonSummary compareFiles(const QHash<QString, SyncWorker::Loca
     for (auto it = remoteFiles.constBegin(); it != remoteFiles.constEnd(); ++it) {
         if (!localPaths.contains(it.key().toCaseFolded())) {
             summary.extraCount++;
-            summary.extraFiles.append(it.key());
+            summary.extraFiles.append(it.value().relativePath);
         }
     }
 
@@ -729,11 +568,12 @@ SyncWorker::ComparisonSummary compareFiles(const QHash<QString, SyncWorker::Loca
 }
 }
 
-SyncWorker::SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes, bool performCopy, QObject *parent)
+SyncWorker::SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes, bool performCopy, QVector<SyncRule> rules, QObject *parent)
     : QObject(parent)
     , m_host(host)
     , m_releaseDir(releaseDir)
     , m_fileTypes(fileTypes)
+    , m_rules(std::move(rules))
     , m_performCopy(performCopy)
     , m_cancelled(std::make_shared<std::atomic<bool>>(false))
 {
@@ -817,12 +657,12 @@ bool SyncWorker::finishIfCancelled()
 
 QString SyncWorker::normalizedReleaseDir() const
 {
-    return normalizeQtPath(m_releaseDir);
+    return m_releaseDir.trimmed().isEmpty() ? QString() : normalizeQtPath(m_releaseDir);
 }
 
 QString SyncWorker::normalizedRemoteDir() const
 {
-    return normalizeQtPath(m_host.sharePath);
+    return m_host.sharePath.trimmed().isEmpty() ? QString() : normalizeQtPath(m_host.sharePath);
 }
 
 void SyncWorker::process()
@@ -841,18 +681,6 @@ void SyncWorker::process()
     }
     if (remoteRoot.isEmpty()) {
         finishWithError(Error, "共享目录为空", "请为主机配置共享目录");
-        return;
-    }
-
-    QSet<QString> typeSet;
-    for (const QString &type : m_fileTypes) {
-        const QString normalized = normalizeExtension(type);
-        if (!normalized.isEmpty()) {
-            typeSet.insert(normalized);
-        }
-    }
-    if (typeSet.isEmpty()) {
-        finishWithError(Error, "未选择类型", "请至少勾选一种文件类型");
         return;
     }
 
@@ -888,16 +716,18 @@ void SyncWorker::process()
         return;
     }
 
-    const QHash<QString, LocalFile> localFiles = collectLocalFiles(localRoot, typeSet, this);
-    if (finishIfCancelled()) {
+    QVector<SyncPlan::Scope> scopes;
+    QString planError;
+    if (!SyncPlan::build(localRoot, remoteRoot, m_fileTypes, m_rules, &scopes, &planError)) {
+        finishWithError(Error, "同步规则无效", planError);
         return;
     }
-
-    const QHash<QString, RemoteFile> remoteFiles = collectRemoteFiles(remoteRoot, typeSet, this);
-    if (finishIfCancelled()) {
-        return;
-    }
-
+    const auto localFiles = SyncPlan::collect(localRoot, scopes, true, m_cancelled.get(), &planError);
+    if (finishIfCancelled()) return;
+    if (!planError.isEmpty()) { finishWithError(Error, "本地扫描失败", planError); return; }
+    const auto remoteFiles = SyncPlan::collect(remoteRoot, scopes, false, m_cancelled.get(), &planError);
+    if (finishIfCancelled()) return;
+    if (!planError.isEmpty()) { finishWithError(Error, "远端扫描失败", planError); return; }
     QVector<PendingCopy> pendingCopies;
     ComparisonSummary summary = compareFiles(localFiles, remoteFiles, m_performCopy ? &pendingCopies : nullptr, remoteRoot);
     const int initialMismatch = mismatchPercent(summary);
@@ -943,7 +773,7 @@ void SyncWorker::process()
                   .arg(threadCount));
 
     QString copyError;
-    if (!runRobocopy(this, localRoot, remoteRoot, pendingCopies, typeSet, threadCount, &copyError)) {
+    if (!runRobocopy(this, localRoot, pendingCopies, threadCount, &copyError)) {
         summary.failedCount++;
         finishWithError(Error, "同步失败", copyError);
         return;
@@ -953,12 +783,11 @@ void SyncWorker::process()
         return;
     }
 
-    ComparisonSummary finalSummary = summary;
-    finalSummary.matchingCount = finalSummary.localCount;
-    finalSummary.missingCount = 0;
-    finalSummary.outdatedCount = 0;
-    finalSummary.failedCount = 0;
-    finalSummary.detail = summaryText(finalSummary);
+    // Re-read the destination instead of assuming that a successful process copied every file.
+    const auto finalRemoteFiles = SyncPlan::collect(remoteRoot, scopes, false, m_cancelled.get(), &planError);
+    if (finishIfCancelled()) return;
+    if (!planError.isEmpty()) { finishWithError(Error, "同步后校验失败", planError); return; }
+    ComparisonSummary finalSummary = compareFiles(localFiles, finalRemoteFiles, nullptr, remoteRoot);
     const int finalMismatch = mismatchPercent(finalSummary);
     const bool hasBlockingDifference = hasSyncBlockingDifference(finalSummary);
 

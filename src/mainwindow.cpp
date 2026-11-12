@@ -3,6 +3,13 @@
 
 #include "configmanager.h"
 #include "syncworker.h"
+#include "syncplan.h"
+#include "ui_mainwindow.h"
+#include "ui_syncruledialog.h"
+#include "ui_usagetipsdialog.h"
+#include "ui_recentcopypreview.h"
+#include "ui_updatedialog.h"
+#include <QDialogButtonBox>
 
 #include <algorithm>
 #include <memory>
@@ -96,22 +103,12 @@ public:
     {
         setAttribute(Qt::WA_TranslucentBackground);
         setAttribute(Qt::WA_ShowWithoutActivating);
-        setObjectName("recentCopyPreview");
-        setStyleSheet("QLabel { color: #20252b; background: transparent; border: none; }"
-                      "QPlainTextEdit { color: #20252b; background: transparent; border: none; }");
-
-        auto *layout = new QVBoxLayout(this);
-        m_title = new QLabel("本轮拷贝预览", this);
-        m_title->setWordWrap(true);
-        layout->addWidget(m_title);
-        m_text = new QPlainTextEdit(this);
+        Ui::RecentCopyPreview ui;
+        ui.setupUi(this);
+        m_title = ui.titleLabel;
+        m_text = ui.textEdit;
         m_text->viewport()->setAutoFillBackground(false);
-        m_text->setReadOnly(true);
-        m_text->setFocusPolicy(Qt::NoFocus);
         m_text->setWordWrapMode(QTextOption::WrapAnywhere);
-        m_text->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        layout->addWidget(m_text);
-
         m_showTimer.setSingleShot(true);
         m_showTimer.setInterval(100);
         connect(&m_showTimer, &QTimer::timeout, this, [this]() {
@@ -485,9 +482,10 @@ QString formatMegabytes(qint64 bytes)
 }
 }
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(QWidget *parent, const QString &configPath)
     : QMainWindow(parent)
-    , m_configPath(ConfigManager::defaultConfigPath())
+    , m_ui(new Ui::MainWindow)
+    , m_configPath(configPath.isEmpty() ? ConfigManager::defaultConfigPath() : configPath)
 {
     setupUi();
     m_copyPreview = new RecentCopyPreview(this);
@@ -571,6 +569,10 @@ MainWindow::~MainWindow()
         }
     }
     SyncWorker::releaseShareConnections();
+    // QWidget 析构隐藏窗口时仍会发送焦点/选择信号；先断开，避免访问已析构的配置和 Ui 成员。
+    for (QObject *child : findChildren<QObject *>()) {
+        QObject::disconnect(child, nullptr, this, nullptr);
+    }
 }
 
 bool MainWindow::event(QEvent *event)
@@ -700,156 +702,56 @@ void MainWindow::finishExit()
 
 void MainWindow::setupUi()
 {
+    m_ui->setupUi(this);
     setWindowTitle(QString("远程 Release 同步工具 v%1").arg(QCoreApplication::applicationVersion()));
-    resize(1280, 820);
-
-    auto *central = new QWidget(this);
-    auto *rootLayout = new QVBoxLayout(central);
-    rootLayout->setSpacing(12);
-
-    auto *localGroup = new QGroupBox("本地目录与同步选项", central);
-    auto *localLayout = new QVBoxLayout(localGroup);
-
-    auto *dirLayout = new QHBoxLayout();
-    auto *dirLabel = new QLabel("Release 目录：", localGroup);
-    m_releaseDirEdit = new QComboBox(localGroup);
-    m_releaseDirEdit->setEditable(true);
-    m_releaseDirEdit->setInsertPolicy(QComboBox::NoInsert);
-    m_releaseDirEdit->setMinimumWidth(400);
+    if (QScreen *screen = QGuiApplication::primaryScreen()) {
+        resize(QSize(1280, 860).boundedTo(screen->availableGeometry().size() - QSize(40, 60)));
+    }
+    m_ui->settingsScroll->setMinimumHeight(qMin(m_ui->settingsContent->sizeHint().height(), qMax(200, height() - 230)));
+    m_releaseDirEdit = m_ui->releaseDirEdit;
+    m_typeList = m_ui->typeList;
+    m_newTypeEdit = m_ui->newTypeEdit;
+    m_autoSyncCheck = m_ui->autoSyncCheck;
+    m_startWithSystemCheck = m_ui->startWithSystemCheck;
+    m_intervalSpin = m_ui->intervalSpin;
+    m_hostEnabledCheck = m_ui->hostEnabledCheck;
+    m_hostNameEdit = m_ui->hostNameEdit;
+    m_hostPathEdit = m_ui->hostPathEdit;
+    m_hostUserEdit = m_ui->hostUserEdit;
+    m_hostPasswordEdit = m_ui->hostPasswordEdit;
+    m_hostTable = m_ui->hostTable;
+    m_checkUpdatesOnStartupCheck = m_ui->checkUpdatesOnStartupCheck;
+    m_silentUpdateCheck = m_ui->silentUpdateCheck;
+    m_checkUpdatesButton = m_ui->checkUpdatesButton;
     m_releaseDirEdit->lineEdit()->setPlaceholderText("选择或输入本地 Release 目录路径...");
-    auto *browseButton = new QPushButton("浏览...", localGroup);
-    dirLayout->addWidget(dirLabel);
-    dirLayout->addWidget(m_releaseDirEdit, 1);
-    dirLayout->addWidget(browseButton);
-    localLayout->addLayout(dirLayout);
-
-    auto *typeRow = new QHBoxLayout();
-    auto *typeLabel = new QLabel("同步类型：", localGroup);
-    m_typeList = new QListWidget(localGroup);
-    m_typeList->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_typeList->setMaximumHeight(110);
-
-    auto *typeButtonColumn = new QVBoxLayout();
-    m_newTypeEdit = new QLineEdit(localGroup);
-    m_newTypeEdit->setPlaceholderText("输入扩展名如 dll");
-    auto *addTypeButton = new QPushButton("添加类型", localGroup);
-    auto *removeTypeButton = new QPushButton("删除类型", localGroup);
-    typeButtonColumn->addWidget(m_newTypeEdit);
-    typeButtonColumn->addWidget(addTypeButton);
-    typeButtonColumn->addWidget(removeTypeButton);
-    typeButtonColumn->addStretch();
-
-    typeRow->addWidget(typeLabel);
-    typeRow->addWidget(m_typeList, 1);
-    typeRow->addLayout(typeButtonColumn);
-    localLayout->addLayout(typeRow);
-
-    auto *optionRow = new QHBoxLayout();
-    m_autoSyncCheck = new QCheckBox("检测到本地文件变化后自动同步", localGroup);
-    m_startWithSystemCheck = new QCheckBox("开机自动启动", localGroup);
-    m_intervalSpin = new QSpinBox(localGroup);
-    m_intervalSpin->setRange(1, 3600);
-    m_intervalSpin->setSuffix(" 秒");
-    auto *saveConfigButton = new QPushButton("保存配置", localGroup);
-    auto *refreshButton = new QPushButton("刷新状态", localGroup);
-    auto *syncButton = new QPushButton("手动同步", localGroup);
-    auto *stopButton = new QPushButton(style()->standardIcon(QStyle::SP_MediaStop), "停止全部", localGroup);
-    optionRow->addWidget(m_autoSyncCheck);
-    optionRow->addWidget(m_startWithSystemCheck);
-    optionRow->addWidget(new QLabel("扫描间隔", localGroup));
-    optionRow->addWidget(m_intervalSpin);
-    optionRow->addStretch();
-    optionRow->addWidget(saveConfigButton);
-    optionRow->addWidget(refreshButton);
-    optionRow->addWidget(syncButton);
-    optionRow->addWidget(stopButton);
-    localLayout->addLayout(optionRow);
-
-    auto *hostEditorGroup = new QGroupBox("远程主机编辑", central);
-    auto *hostEditorLayout = new QVBoxLayout(hostEditorGroup);
-    auto *hostForm = new QFormLayout();
-    m_hostEnabledCheck = new QCheckBox("勾选即启用同步", hostEditorGroup);
-    m_hostNameEdit = new QLineEdit(hostEditorGroup);
-    m_hostPathEdit = new QLineEdit(hostEditorGroup);
-    m_hostUserEdit = new QLineEdit(hostEditorGroup);
-    m_hostPasswordEdit = new QLineEdit(hostEditorGroup);
-    m_hostPasswordEdit->setEchoMode(QLineEdit::Password);
-    m_hostNameEdit->setPlaceholderText("可选，不填时默认显示主机名");
-    m_hostPathEdit->setPlaceholderText("\\\\DESKTOP-ECJ97U1\\share\\LHJ\\Release");
-    m_hostUserEdit->setPlaceholderText("Administrator");
-    m_hostPasswordEdit->setPlaceholderText("123");
-    hostForm->addRow("启用：", m_hostEnabledCheck);
-    hostForm->addRow("显示名称：", m_hostNameEdit);
-    hostForm->addRow("共享目录：", m_hostPathEdit);
-    hostForm->addRow("账号：", m_hostUserEdit);
-    hostForm->addRow("密码：", m_hostPasswordEdit);
-    hostEditorLayout->addLayout(hostForm);
-
-    auto *hostButtonRow = new QHBoxLayout();
-    auto *addHostButton = new QPushButton("添加主机", hostEditorGroup);
-    auto *updateHostButton = new QPushButton("更新选中主机", hostEditorGroup);
-    auto *removeHostButton = new QPushButton("删除选中主机", hostEditorGroup);
-    auto *clearEditorButton = new QPushButton("清空编辑", hostEditorGroup);
-    hostButtonRow->addWidget(addHostButton);
-    hostButtonRow->addWidget(updateHostButton);
-    hostButtonRow->addWidget(removeHostButton);
-    hostButtonRow->addWidget(clearEditorButton);
-    hostButtonRow->addStretch();
-    hostEditorLayout->addLayout(hostButtonRow);
-
-    auto *tableGroup = new QGroupBox("远程主机状态", central);
-    auto *tableLayout = new QVBoxLayout(tableGroup);
-    m_hostTable = new QTableWidget(tableGroup);
-    m_hostTable->setColumnCount(8);
-    m_hostTable->setHorizontalHeaderLabels(QStringList()
-                                           << "启用"
-                                           << "名称"
-                                           << "共享目录"
-                                           << "账号"
-                                           << "进度"
-                                           << "状态"
-                                           << "详情"
-                                           << "上次同步");
-    m_hostTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_hostTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_ui->stopButton->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
+    for (int column : {0, 1, 3, 4, 5}) {
+        m_hostTable->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
+    }
     m_hostTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
-    m_hostTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    m_hostTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    m_hostTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
     m_hostTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
     m_hostTable->horizontalHeader()->setSectionResizeMode(7, QHeaderView::Fixed);
     m_hostTable->setColumnWidth(7, 160);
-    m_hostTable->verticalHeader()->setVisible(false);
-    m_hostTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_hostTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_hostTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_hostTable->setContextMenuPolicy(Qt::CustomContextMenu);
-    tableLayout->addWidget(m_hostTable);
-
-    rootLayout->addWidget(localGroup);
-    rootLayout->addWidget(hostEditorGroup);
-    rootLayout->addWidget(tableGroup, 1);
-
-    setCentralWidget(central);
-
-    auto *usageTipsButton = new QPushButton("使用技巧", this);
-    usageTipsButton->setToolTip("查看快捷操作和隐藏功能（F1）");
-    statusBar()->addPermanentWidget(usageTipsButton);
-    connect(usageTipsButton, &QPushButton::clicked, this, &MainWindow::showUsageTips);
-    auto *usageTipsAction = new QAction(this);
-    usageTipsAction->setShortcut(QKeySequence(Qt::Key_F1));
-    addAction(usageTipsAction);
-    connect(usageTipsAction, &QAction::triggered, this, &MainWindow::showUsageTips);
-
-    m_checkUpdatesOnStartupCheck = new QCheckBox("启动时检查更新", this);
-    m_checkUpdatesOnStartupCheck->setToolTip("下次启动时额外检查更新；每 2 小时的定时检查始终运行。");
-    statusBar()->addPermanentWidget(m_checkUpdatesOnStartupCheck);
-    m_silentUpdateCheck = new QCheckBox("无感更新", this);
-    m_silentUpdateCheck->setToolTip("发现新版本后在后台下载安装包，没有同步任务运行时自动安装并重启程序。");
-    statusBar()->addPermanentWidget(m_silentUpdateCheck);
-    m_checkUpdatesButton = new QPushButton("检查更新", this);
-    statusBar()->addPermanentWidget(m_checkUpdatesButton);
+    m_ui->ruleTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_ui->ruleTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_ui->ruleTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    statusBar()->addPermanentWidget(m_ui->statusControls);
+    addAction(m_ui->usageTipsAction);
+    connect(m_ui->usageTipsButton, &QPushButton::clicked, this, &MainWindow::showUsageTips);
+    connect(m_ui->usageTipsAction, &QAction::triggered, this, &MainWindow::showUsageTips);
     connect(m_checkUpdatesButton, &QPushButton::clicked, this, &MainWindow::checkForUpdates);
+    connect(m_ui->addRuleButton, &QPushButton::clicked, this, [this]() { editSyncRule(false); });
+    connect(m_ui->editRuleButton, &QPushButton::clicked, this, [this]() { editSyncRule(true); });
+    connect(m_ui->removeRuleButton, &QPushButton::clicked, this, &MainWindow::removeSyncRule);
+    connect(m_ui->ruleTable, &QTableWidget::cellDoubleClicked, this, [this](int, int) { editSyncRule(true); });
+    connect(m_ui->ruleTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::updateRulePreview);
+    connect(m_ui->ruleTable, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item) {
+        if (item->column() != 0 || item->row() >= m_config.syncRules.size()) return;
+        m_config.syncRules[item->row()].enabled = item->checkState() == Qt::Checked;
+        syncRulesChanged();
+    });
+    connect(m_releaseDirEdit, &QComboBox::editTextChanged, this, &MainWindow::updateRulePreview);
+    connect(m_hostPathEdit, &QLineEdit::textChanged, this, &MainWindow::updateRulePreview);
     connect(m_checkUpdatesOnStartupCheck, &QCheckBox::toggled, this, [this](bool) {
         saveConfiguration();
     });
@@ -876,21 +778,21 @@ void MainWindow::setupUi()
     });
     updateCheckButton();
 
-    connect(browseButton, &QPushButton::clicked, this, &MainWindow::browseReleaseDir);
-    connect(addTypeButton, &QPushButton::clicked, this, &MainWindow::addFileType);
-    connect(removeTypeButton, &QPushButton::clicked, this, &MainWindow::removeSelectedFileType);
+    connect(m_ui->browseButton, &QPushButton::clicked, this, &MainWindow::browseReleaseDir);
+    connect(m_ui->addTypeButton, &QPushButton::clicked, this, &MainWindow::addFileType);
+    connect(m_ui->removeTypeButton, &QPushButton::clicked, this, &MainWindow::removeSelectedFileType);
     connect(m_typeList, &QListWidget::itemChanged, this, &MainWindow::handleTypeItemChanged);
-    connect(saveConfigButton, &QPushButton::clicked, this, &MainWindow::saveConfiguration);
-    connect(refreshButton, &QPushButton::clicked, this, [this]() {
+    connect(m_ui->saveConfigButton, &QPushButton::clicked, this, &MainWindow::saveConfiguration);
+    connect(m_ui->refreshButton, &QPushButton::clicked, this, [this]() {
         m_backgroundTasksPaused = false;
         startOperations(false);
     });
-    connect(syncButton, &QPushButton::clicked, this, &MainWindow::syncNow);
-    connect(stopButton, &QPushButton::clicked, this, &MainWindow::stopAllOperations);
-    connect(addHostButton, &QPushButton::clicked, this, [this]() { addOrUpdateHost(false); });
-    connect(updateHostButton, &QPushButton::clicked, this, [this]() { addOrUpdateHost(true); });
-    connect(removeHostButton, &QPushButton::clicked, this, &MainWindow::removeSelectedHost);
-    connect(clearEditorButton, &QPushButton::clicked, this, &MainWindow::clearHostEditor);
+    connect(m_ui->syncButton, &QPushButton::clicked, this, &MainWindow::syncNow);
+    connect(m_ui->stopButton, &QPushButton::clicked, this, &MainWindow::stopAllOperations);
+    connect(m_ui->addHostButton, &QPushButton::clicked, this, [this]() { addOrUpdateHost(false); });
+    connect(m_ui->updateHostButton, &QPushButton::clicked, this, [this]() { addOrUpdateHost(true); });
+    connect(m_ui->removeHostButton, &QPushButton::clicked, this, &MainWindow::removeSelectedHost);
+    connect(m_ui->clearEditorButton, &QPushButton::clicked, this, &MainWindow::clearHostEditor);
     connect(m_hostTable, &QTableWidget::itemChanged, this, &MainWindow::handleHostTableItemChanged);
     connect(m_hostTable, &QTableWidget::cellClicked, this, &MainWindow::handleHostTableCellClicked);
     connect(m_hostTable, &QTableWidget::cellDoubleClicked, this, &MainWindow::handleHostTableCellDoubleClicked);
@@ -919,6 +821,149 @@ void MainWindow::setupUi()
     connect(m_releaseDirEdit, QOverload<int>::of(&QComboBox::activated), this, &MainWindow::onReleaseDirEditFinished);
 }
 
+void MainWindow::refreshRuleTable()
+{
+    QSignalBlocker blocker(m_ui->ruleTable);
+    const int selectedRow = m_ui->ruleTable->currentRow();
+    m_ui->ruleTable->setRowCount(m_config.syncRules.size());
+    for (int row = 0; row < m_config.syncRules.size(); ++row) {
+        const SyncRule &rule = m_config.syncRules.at(row);
+        auto *enabled = new QTableWidgetItem();
+        enabled->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+        enabled->setCheckState(rule.enabled ? Qt::Checked : Qt::Unchecked);
+        const QString displayPath = rule.relativePath.startsWith('.') ? rule.relativePath : "./" + rule.relativePath;
+        auto *path = new QTableWidgetItem(displayPath);
+        path->setToolTip(rule.relativePath);
+        auto *types = new QTableWidgetItem(rule.fileTypes.isEmpty() ? QString("全部文件") : rule.fileTypes.join(';'));
+        types->setToolTip(types->text());
+        m_ui->ruleTable->setItem(row, 0, enabled);
+        m_ui->ruleTable->setItem(row, 1, path);
+        m_ui->ruleTable->setItem(row, 2, types);
+    }
+    if (!m_config.syncRules.isEmpty()) m_ui->ruleTable->selectRow(qBound(0, selectedRow, m_config.syncRules.size() - 1));
+    m_ui->syncTabs->setTabText(1, QString("附加同步规则（%1）").arg(m_config.syncRules.size()));
+    updateRulePreview();
+}
+
+void MainWindow::updateRulePreview()
+{
+    if (m_isClosing) return;
+    const int row = m_ui->ruleTable->currentRow();
+    const bool selected = row >= 0 && row < m_config.syncRules.size();
+    m_ui->editRuleButton->setEnabled(selected);
+    m_ui->removeRuleButton->setEnabled(selected);
+    if (!selected) {
+        m_ui->rulePreview->setText("路径相对于两端的 Release 目录：./image 在其内部，../Lang 在其同级。双击规则可编辑。");
+        return;
+    }
+    const QString relative = m_config.syncRules.at(row).relativePath;
+    const QString local = SyncPlan::resolvePath(m_releaseDirEdit->currentText(), relative);
+    const QString remote = SyncPlan::resolvePath(m_hostPathEdit->text(), relative);
+    QString error;
+    const bool valid = SyncPlan::validateRemotePath(m_hostPathEdit->text(), relative, &error);
+    m_ui->rulePreview->setText(QString("本地：%1\n远端：%2")
+        .arg(local.isEmpty() ? QString("请先选择 Release 目录") : QDir::toNativeSeparators(local),
+             !valid ? error : remote.isEmpty() ? QString("请选择主机，或在主机编辑区填写共享目录") : QDir::toNativeSeparators(remote)));
+}
+
+void MainWindow::syncRulesChanged()
+{
+    // 当前任务保留原规则快照，旧成功回调不能恢复已失效的同步记录。
+    for (HostEntry &host : m_config.hosts) {
+        host.lastSyncUtc = QDateTime();
+        ++m_syncContextRevisions[host.id];
+    }
+    refreshLastSyncTimes();
+    refreshRuleTable();
+    saveConfiguration();
+    m_lastFingerprint.clear();
+    requestAutoSync("附加同步规则已更新，开始自动同步");
+}
+
+void MainWindow::editSyncRule(bool editExisting)
+{
+    const int row = m_ui->ruleTable->currentRow();
+    if (editExisting && (row < 0 || row >= m_config.syncRules.size())) return;
+    QDialog dialog(this);
+    Ui::SyncRuleDialog ui;
+    ui.setupUi(&dialog);
+    dialog.setWindowFlags(dialog.windowFlags() & ~Qt::WindowContextHelpButtonHint);
+    dialog.setWindowTitle(editExisting ? "编辑附加同步规则" : "添加附加同步规则");
+    ui.buttonBox->button(QDialogButtonBox::Save)->setText("保存");
+    ui.buttonBox->button(QDialogButtonBox::Cancel)->setText("取消");
+    const SyncRule initial = editExisting ? m_config.syncRules.at(row) : SyncRule();
+    ui.pathEdit->setText(initial.relativePath);
+    ui.typesEdit->setText(initial.fileTypes.join(';'));
+    ui.enabledCheck->setChecked(initial.enabled);
+    auto preview = [&]() {
+        QString path, error;
+        if (!SyncPlan::normalizeRelativePath(ui.pathEdit->text(), &path, &error)) {
+            ui.previewLabel->setText(error);
+            return;
+        }
+        const QString local = SyncPlan::resolvePath(m_releaseDirEdit->currentText(), path);
+        const QString remote = SyncPlan::resolvePath(m_hostPathEdit->text(), path);
+        const bool valid = SyncPlan::validateRemotePath(m_hostPathEdit->text(), path, &error);
+        ui.previewLabel->setText(QString("本地：%1\n远端：%2")
+            .arg(local.isEmpty() ? QString("请先配置本地 Release 目录") : QDir::toNativeSeparators(local),
+                 !valid ? error : remote.isEmpty() ? QString("请选择主机以预览远端路径") : QDir::toNativeSeparators(remote)));
+    };
+    connect(ui.pathEdit, &QLineEdit::textChanged, &dialog, preview);
+    auto browse = [&](bool file) {
+        const QString base = m_releaseDirEdit->currentText().trimmed();
+        if (base.isEmpty()) {
+            QMessageBox::information(&dialog, "选择 Release 目录", "请先在主窗口设置本地 Release 目录。");
+            return;
+        }
+        const QString selected = file ? QFileDialog::getOpenFileName(&dialog, "选择规则文件", base)
+                                      : QFileDialog::getExistingDirectory(&dialog, "选择规则目录", base);
+        if (!selected.isEmpty()) ui.pathEdit->setText(QDir(base).relativeFilePath(selected));
+    };
+    connect(ui.browseDirButton, &QPushButton::clicked, &dialog, [&]() { browse(false); });
+    connect(ui.browseFileButton, &QPushButton::clicked, &dialog, [&]() { browse(true); });
+    connect(ui.buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    SyncRule result;
+    connect(ui.buttonBox, &QDialogButtonBox::accepted, &dialog, [&]() {
+        QString error;
+        const QString text = ui.typesEdit->text().trimmed();
+        const QStringList types = text.isEmpty() ? QStringList() : text.split(QRegularExpression("[;,，；\\s]+"), QString::SkipEmptyParts);
+        if (!SyncPlan::normalizeRelativePath(ui.pathEdit->text(), &result.relativePath, &error)
+            || !SyncPlan::normalizeTypes(types, &result.fileTypes, &error)) {
+            QMessageBox::warning(&dialog, "规则无效", error);
+            return;
+        }
+        result.enabled = ui.enabledCheck->isChecked();
+        if (result.enabled) {
+            for (const HostEntry &host : m_config.hosts) {
+                if (!SyncPlan::validateRemotePath(host.sharePath, result.relativePath, &error)) {
+                    QMessageBox::warning(&dialog, "规则无效", QString("主机 %1：%2").arg(host.name, error));
+                    return;
+                }
+            }
+            QVector<SyncPlan::Scope> scopes;
+            if (!SyncPlan::build(m_releaseDirEdit->currentText(), QString(), {}, {result}, &scopes, &error)) {
+                QMessageBox::warning(&dialog, "规则无效", error);
+                return;
+            }
+        }
+        dialog.accept();
+    });
+    preview();
+    if (dialog.exec() != QDialog::Accepted) return;
+    if (editExisting) m_config.syncRules[row] = result;
+    else m_config.syncRules.append(result);
+    syncRulesChanged();
+    m_ui->ruleTable->selectRow(editExisting ? row : m_config.syncRules.size() - 1);
+}
+
+void MainWindow::removeSyncRule()
+{
+    const int row = m_ui->ruleTable->currentRow();
+    if (row < 0 || row >= m_config.syncRules.size()) return;
+    m_config.syncRules.removeAt(row);
+    syncRulesChanged();
+}
+
 void MainWindow::showUsageTips()
 {
     if (m_isClosing) {
@@ -943,75 +988,10 @@ void MainWindow::showUsageTips()
     const QSize available = screen != nullptr
         ? screen->availableGeometry().size() - QSize(64, 80) : QSize(1080, 760);
     dialog->resize(QSize(1080, 760).boundedTo(available));
-    auto *layout = new QVBoxLayout(dialog);
-    layout->setContentsMargins(20, 20, 20, 16);
-    layout->setSpacing(12);
-
-    auto *heading = new QLabel("让日常同步更顺手", dialog);
-    QFont headingFont = heading->font();
-    headingFont.setPointSize(headingFont.pointSize() + 3);
-    headingFont.setBold(true);
-    heading->setFont(headingFont);
-    layout->addWidget(heading);
-    auto *intro = new QLabel("这些操作已内置在软件中。随时点击底部「使用技巧」或按 F1 查看。", dialog);
-    intro->setWordWrap(true);
-    layout->addWidget(intro);
-
-    auto *scroll = new QScrollArea(dialog);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    auto *content = new QWidget(scroll);
-    auto *contentLayout = new QVBoxLayout(content);
-    contentLayout->setContentsMargins(0, 0, 8, 0);
-    contentLayout->setSpacing(12);
-
-    auto addSection = [content, contentLayout](const QString &title) {
-        auto *group = new QGroupBox(title, content);
-        auto *form = new QFormLayout(group);
-        form->setRowWrapPolicy(QFormLayout::WrapLongRows);
-        form->setHorizontalSpacing(18);
-        form->setVerticalSpacing(12);
-        form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-        contentLayout->addWidget(group);
-        return form;
-    };
-    auto addTip = [content](QFormLayout *form, const QString &gesture, const QString &description) {
-        auto *label = new QLabel(gesture, content);
-        QFont font = label->font();
-        font.setBold(true);
-        label->setFont(font);
-        auto *detail = new QLabel(description, content);
-        detail->setWordWrap(true);
-        detail->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        form->addRow(label, detail);
-    };
-
-    auto *hosts = addSection("主机操作");
-    addTip(hosts, "双击名称 / 共享目录", "复制共享路径中的主机名到剪贴板。例如 \\\\SERVER\\share 会复制 SERVER，而非自定义显示名称。");
-    addTip(hosts, "Ctrl + 点击共享目录", "在 Windows 资源管理器中打开该共享目录。");
-    addTip(hosts, "右键点击主机行", "选择「复制主机名」，也可完成复制。");
-    addTip(hosts, "选中主机行", "将该主机的信息载入上方编辑区；修改后点击「更新选中主机」保存。");
-
-    auto *previews = addSection("预览与详情");
-    addTip(previews, "悬停在进度条上", "查看本轮文件处理记录。可将鼠标移入浮窗，滚动阅读较长的列表。");
-    addTip(previews, "悬停在详情列上", "查看完整同步详情；移入浮窗后可滚动阅读。");
-    addTip(previews, "展开 Release 目录下拉框", "快速切换最近使用过的本地目录，最多保留 20 条记录。");
-
-    auto *tray = addSection("托盘与退出");
-    addTip(tray, "点击主窗口关闭按钮 ×", "隐藏到系统托盘，程序继续在后台运行。");
-    addTip(tray, "Ctrl + 点击关闭按钮 ×", "完全退出软件；如有后台任务，会先停止任务再退出。");
-    addTip(tray, "双击系统托盘图标", "恢复并显示主界面。也可右键图标，选择「显示主界面」或「退出」。");
-
-    contentLayout->addStretch();
-    scroll->setWidget(content);
-    layout->addWidget(scroll, 1);
-    auto *buttonRow = new QHBoxLayout();
-    buttonRow->addStretch();
-    auto *closeButton = new QPushButton("知道了", dialog);
-    closeButton->setDefault(true);
-    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::accept);
-    buttonRow->addWidget(closeButton);
-    layout->addLayout(buttonRow);
+    Ui::UsageTipsDialog ui;
+    ui.setupUi(dialog);
+    ui.buttonBox->button(QDialogButtonBox::Ok)->setText("知道了");
+    connect(ui.buttonBox, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
     dialog->show();
 }
 
@@ -1220,48 +1200,14 @@ void MainWindow::showAvailableUpdate()
     updateCheckButton();
 
     QDialog dialog(this);
-    dialog.setWindowTitle("发现新版本");
+    Ui::UpdateDialog ui;
+    ui.setupUi(&dialog);
     dialog.setWindowFlags(dialog.windowFlags() & ~Qt::WindowContextHelpButtonHint);
-    dialog.resize(620, 560);
-    dialog.setStyleSheet(
-        "QPushButton#primaryButton { background-color: #0a7cff; color: white; border: 1px solid #0a7cff;"
-        " border-radius: 4px; padding: 6px 18px; }"
-        "QPushButton#primaryButton:hover { background-color: #2b8fff; }"
-        "QPushButton#primaryButton:disabled { background-color: #9cc9ff; border-color: #9cc9ff; }"
-        "QPushButton#secondaryButton { background-color: white; color: #0a7cff; border: 1px solid #0a7cff;"
-        " border-radius: 4px; padding: 6px 18px; }"
-        "QToolButton#sectionButton { border: none; font-weight: bold; padding: 2px 0px; }"
-        "QProgressBar { border: none; background-color: #cfe4ff; border-radius: 3px; }"
-        "QProgressBar::chunk { background-color: #0a7cff; border-radius: 3px; }");
-
-    auto *layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(24, 20, 24, 16);
-    layout->setSpacing(12);
-
-    auto *headerLayout = new QHBoxLayout();
-    auto *titleLabel = new QLabel(QString("新版本 v%1").arg(version), &dialog);
-    QFont titleFont = titleLabel->font();
-    titleFont.setPointSize(titleFont.pointSize() + 6);
-    titleLabel->setFont(titleFont);
-    headerLayout->addWidget(titleLabel);
-    headerLayout->addStretch(1);
-    auto *releasePageButton = new QPushButton("前往发布页", &dialog);
-    releasePageButton->setObjectName("primaryButton");
-    releasePageButton->setAutoDefault(false);
-    headerLayout->addWidget(releasePageButton);
-    layout->addLayout(headerLayout);
-
-    auto *currentVersionLabel = new QLabel(QString("当前版本 v%1").arg(QCoreApplication::applicationVersion()), &dialog);
-    currentVersionLabel->setStyleSheet("color: #6b7785;");
-    layout->addWidget(currentVersionLabel);
-
-    auto *scrollArea = new QScrollArea(&dialog);
-    scrollArea->setWidgetResizable(true);
-    scrollArea->setFrameShape(QFrame::NoFrame);
-    auto *notesWidget = new QWidget(scrollArea);
-    auto *notesLayout = new QVBoxLayout(notesWidget);
-    notesLayout->setContentsMargins(0, 0, 0, 0);
-    notesLayout->setSpacing(6);
+    ui.titleLabel->setText(QString("新版本 v%1").arg(version));
+    ui.currentVersionLabel->setText(QString("当前版本 v%1").arg(QCoreApplication::applicationVersion()));
+    auto *notesWidget = ui.notesWidget;
+    auto *notesLayout = ui.notesLayout;
+    auto *releasePageButton = ui.releasePageButton;
     if (!notes.isEmpty() || sections.isEmpty()) {
         auto *summaryLabel = new QLabel(notes.isEmpty() ? QString("暂无更新说明。") : notes, notesWidget);
         summaryLabel->setTextFormat(Qt::PlainText);
@@ -1305,43 +1251,14 @@ void MainWindow::showAvailableUpdate()
         notesLayout->addWidget(sectionButton, 0, Qt::AlignLeft);
         notesLayout->addWidget(itemsLabel);
     }
-    auto *linksLabel = new QLabel(QString("<a href=\"release\">查看更多</a>&nbsp;&nbsp;&nbsp;&nbsp;"
-                                          "<a href=\"history\">历史版本下载</a>"),
-                                  notesWidget);
-    linksLabel->setTextFormat(Qt::RichText);
-    linksLabel->setToolTip("在 GitHub 发布页查看完整更新说明，或下载其他版本。");
-    connect(linksLabel, &QLabel::linkActivated, this, [this, releaseUrl, historyUrl](const QString &link) {
+    notesLayout->addStretch(1);
+    connect(ui.linksLabel, &QLabel::linkActivated, this, [this, releaseUrl, historyUrl](const QString &link) {
         openUpdateUrl(link == "history" ? historyUrl : releaseUrl);
     });
-    notesLayout->addSpacing(6);
-    notesLayout->addWidget(linksLabel);
-    notesLayout->addStretch(1);
-    scrollArea->setWidget(notesWidget);
-    layout->addWidget(scrollArea, 1);
-
-    auto *progressBar = new QProgressBar(&dialog);
-    progressBar->setRange(0, 100);
-    progressBar->setValue(0);
-    progressBar->setTextVisible(false);
-    progressBar->setFixedHeight(6);
-    layout->addWidget(progressBar);
-    auto *statusLabel = new QLabel(&dialog);
-    statusLabel->setStyleSheet("color: #6b7785;");
-    statusLabel->setWordWrap(true);
-    layout->addWidget(statusLabel);
-
-    auto *buttonLayout = new QHBoxLayout();
-    buttonLayout->addStretch(1);
-    auto *cancelButton = new QPushButton("取消", &dialog);
-    cancelButton->setObjectName("secondaryButton");
-    cancelButton->setAutoDefault(false);
-    auto *installButton = new QPushButton("更新", &dialog);
-    installButton->setObjectName("primaryButton");
-    installButton->setDefault(true);
-    buttonLayout->addWidget(cancelButton);
-    buttonLayout->addWidget(installButton);
-    layout->addLayout(buttonLayout);
-
+    auto *progressBar = ui.progressBar;
+    auto *statusLabel = ui.statusLabel;
+    auto *cancelButton = ui.cancelButton;
+    auto *installButton = ui.installButton;
     m_updateDialog = &dialog;
     m_updateDialogProgress = progressBar;
     m_updateDialogStatus = statusLabel;
@@ -1818,6 +1735,7 @@ void MainWindow::stopUpdateChecks()
 
 void MainWindow::onReleaseDirEditFinished()
 {
+    if (m_isClosing) return;
     const QString path = m_releaseDirEdit->currentText().trimmed();
     if (!path.isEmpty()) {
         addToReleaseDirHistory(path);
@@ -1906,11 +1824,9 @@ void MainWindow::applyConfigToUi()
     if (m_config.fileTypes.isEmpty()) {
         m_config.fileTypes = QStringList() << "dll" << "exe" << "pdb";
     }
-    if (m_config.selectedFileTypes.isEmpty()) {
-        m_config.selectedFileTypes = m_config.fileTypes;
-    }
 
     refreshTypeList();
+    refreshRuleTable();
     refreshHostTable();
     clearHostEditor();
     m_lastFingerprint = currentLocalFingerprint();
@@ -2162,6 +2078,7 @@ void MainWindow::clearHostEditor()
 
 void MainWindow::loadSelectedHostToEditor()
 {
+    if (m_isClosing) return;
     const int row = m_hostTable->currentRow();
     if (row < 0 || row >= m_config.hosts.size()) {
         return;
@@ -2571,50 +2488,13 @@ QColor MainWindow::colorForState(int state, int mismatchPercent) const
 
 QString MainWindow::currentLocalFingerprint() const
 {
-    const QString rootPath = normalizePathForUi(m_releaseDirEdit->currentText());
-    if (rootPath.isEmpty() || !QFileInfo::exists(rootPath)) {
-        return QString();
-    }
-
-    QSet<QString> selectedTypes;
+    QStringList selectedTypes;
     for (int index = 0; index < m_typeList->count(); ++index) {
-        QListWidgetItem *item = m_typeList->item(index);
-        if (item->checkState() == Qt::Checked) {
-            selectedTypes.insert(normalizedExtension(item->text()));
-        }
+        const QListWidgetItem *item = m_typeList->item(index);
+        if (item->checkState() == Qt::Checked) selectedTypes.append(normalizedExtension(item->text()));
     }
-
-    if (selectedTypes.isEmpty()) {
-        return QString();
-    }
-
-    QStringList fingerprints;
-    QDirIterator iterator(rootPath, QDir::Files, QDirIterator::Subdirectories);
-    const QDir baseDir(rootPath);
-
-    while (iterator.hasNext()) {
-        iterator.next();
-        const QFileInfo info = iterator.fileInfo();
-        if (!selectedTypes.contains(info.suffix().toLower())) {
-            continue;
-        }
-
-        const QString relativePath = QDir::cleanPath(baseDir.relativeFilePath(info.absoluteFilePath())).replace('\\', '/');
-        fingerprints.append(QString("%1|%2|%3")
-                                .arg(relativePath)
-                                .arg(info.size())
-                                .arg(info.lastModified().toMSecsSinceEpoch()));
-    }
-
-    std::sort(fingerprints.begin(), fingerprints.end());
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    for (const QString &fingerprint : fingerprints) {
-        hash.addData(fingerprint.toUtf8());
-    }
-
-    return QString::fromLatin1(hash.result().toHex());
+    return SyncPlan::fingerprint(m_releaseDirEdit->currentText(), selectedTypes, m_config.syncRules);
 }
-
 QString MainWindow::normalizedExtension(const QString &value) const
 {
     QString type = value.trimmed().toLower();
@@ -2672,9 +2552,9 @@ void MainWindow::startOperations(bool performCopy)
 
     QStringList selectedTypes = m_config.selectedFileTypes;
     selectedTypes.removeDuplicates();
-    if (selectedTypes.isEmpty()) {
+    if (selectedTypes.isEmpty() && std::none_of(m_config.syncRules.cbegin(), m_config.syncRules.cend(), [](const SyncRule &rule) { return rule.enabled; })) {
         if (performCopy) {
-            statusBar()->showMessage("请先勾选至少一个同步类型。", 3000);
+            statusBar()->showMessage("请勾选基本同步类型，或启用至少一条附加同步规则。", 3000);
         }
         return;
     }
@@ -2686,7 +2566,7 @@ void MainWindow::startOperations(bool performCopy)
         }
 
         auto *thread = new QThread(this);
-        auto *worker = new SyncWorker(host, m_config.releaseDir, selectedTypes, performCopy);
+        auto *worker = new SyncWorker(host, m_config.releaseDir, selectedTypes, performCopy, m_config.syncRules);
         worker->moveToThread(thread);
 
         connect(thread, &QThread::started, worker, &SyncWorker::process);

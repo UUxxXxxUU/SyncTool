@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SyncRuleDialog</class>
+ <widget class="QDialog" name="SyncRuleDialog">
+  <property name="geometry"><rect><x>0</x><y>0</y><width>800</width><height>360</height></rect></property>
+  <property name="windowTitle"><string>同步规则</string></property>
+  <layout class="QVBoxLayout" name="layout">
+   <property name="spacing"><number>14</number></property>
+   <item><widget class="QLabel" name="intro"><property name="text"><string>相对路径同时应用于本地和远端 Release。./image 表示内部目录，../Lang 表示同级目录。目录规则包含所有子目录中的文件。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+   <item><layout class="QHBoxLayout" name="pathRow" stretch="0,1,0,0">
+    <item><widget class="QLabel" name="pathLabel"><property name="text"><string>相对路径：</string></property></widget></item>
+    <item><widget class="QLineEdit" name="pathEdit"><property name="placeholderText"><string>例如 ./image 或 ../Lang</string></property></widget></item>
+    <item><widget class="QPushButton" name="browseDirButton"><property name="text"><string>选择目录</string></property></widget></item>
+    <item><widget class="QPushButton" name="browseFileButton"><property name="text"><string>选择文件</string></property></widget></item>
+   </layout></item>
+   <item><layout class="QHBoxLayout" name="typeRow" stretch="0,1">
+    <item><widget class="QLabel" name="typeLabel"><property name="text"><string>文件类型：</string></property></widget></item>
+    <item><widget class="QLineEdit" name="typesEdit"><property name="placeholderText"><string>留空为全部文件；多种类型用分号分隔，如 png;jpg 或 .qm</string></property></widget></item>
+   </layout></item>
+   <item><widget class="QCheckBox" name="enabledCheck"><property name="text"><string>启用此规则</string></property><property name="checked"><bool>true</bool></property></widget></item>
+   <item><widget class="QLabel" name="previewLabel"><property name="text"><string/></property><property name="textFormat"><enum>Qt::PlainText</enum></property><property name="wordWrap"><bool>true</bool></property><property name="textInteractionFlags"><set>Qt::TextSelectableByMouse</set></property></widget></item>
+   <item><spacer name="spacer"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property></spacer></item>
+   <item><widget class="QDialogButtonBox" name="buttonBox"><property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Save</set></property></widget></item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

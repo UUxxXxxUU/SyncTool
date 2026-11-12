@@ -186,9 +186,11 @@
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\mainwindow.cpp" />
     <ClCompile Include="src\syncworker.cpp" />
+    <ClCompile Include="src\syncplan.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\appconfig.h" />
+    <ClInclude Include="src\syncplan.h" />
     <ClInclude Include="src\configmanager.h" />
     <QtMoc Include="src\mainwindow.h" />
     <QtMoc Include="src\syncworker.h" />
@@ -196,6 +198,13 @@
   <ItemGroup>
     <ResourceCompile Include="resources\app.rc" />
     <QtRcc Include="resources\app.qrc" />
+  </ItemGroup>
+  <ItemGroup>
+    <QtUic Include="src\mainwindow.ui" />
+    <QtUic Include="src\syncruledialog.ui" />
+    <QtUic Include="src\usagetipsdialog.ui" />
+    <QtUic Include="src\recentcopypreview.ui" />
+    <QtUic Include="src\updatedialog.ui" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="$(QtMsBuild)\qt.targets" Condition="Exists('$(QtMsBuild)\qt.targets')" />

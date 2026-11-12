@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>UpdateDialog</class>
+ <widget class="QDialog" name="UpdateDialog">
+  <property name="geometry"><rect><x>0</x><y>0</y><width>620</width><height>560</height></rect></property>
+  <property name="windowTitle"><string>发现新版本</string></property>
+  <property name="styleSheet"><string>QPushButton#releasePageButton, QPushButton#installButton { background-color: #0a7cff; color: white; border: 1px solid #0a7cff; border-radius: 4px; padding: 6px 18px; }
+QPushButton#releasePageButton:hover, QPushButton#installButton:hover { background-color: #2b8fff; }
+QPushButton#installButton:disabled { background-color: #9cc9ff; border-color: #9cc9ff; }
+QPushButton#cancelButton { background-color: white; color: #0a7cff; border: 1px solid #0a7cff; border-radius: 4px; padding: 6px 18px; }
+QToolButton#sectionButton { border: none; font-weight: bold; padding: 2px 0px; }
+QProgressBar { border: none; background-color: #cfe4ff; border-radius: 3px; }
+QProgressBar::chunk { background-color: #0a7cff; border-radius: 3px; }</string></property>
+  <layout class="QVBoxLayout" name="layout">
+   <property name="leftMargin"><number>24</number></property><property name="topMargin"><number>20</number></property><property name="rightMargin"><number>24</number></property><property name="bottomMargin"><number>16</number></property><property name="spacing"><number>12</number></property>
+   <item><layout class="QHBoxLayout" name="headerLayout" stretch="1,0">
+    <item><widget class="QLabel" name="titleLabel"><property name="font"><font><pointsize>16</pointsize></font></property><property name="text"><string>新版本</string></property></widget></item>
+    <item><widget class="QPushButton" name="releasePageButton"><property name="text"><string>前往发布页</string></property><property name="autoDefault"><bool>false</bool></property></widget></item>
+   </layout></item>
+   <item><widget class="QLabel" name="currentVersionLabel"><property name="text"><string>当前版本</string></property><property name="styleSheet"><string>color: #6b7785;</string></property></widget></item>
+   <item><widget class="QScrollArea" name="scrollArea">
+    <property name="widgetResizable"><bool>true</bool></property><property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+    <widget class="QWidget" name="notesWidget"><layout class="QVBoxLayout" name="notesLayout"><property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property><property name="spacing"><number>6</number></property></layout></widget>
+   </widget></item>
+   <item><widget class="QLabel" name="linksLabel"><property name="text"><string>&lt;a href="release"&gt;查看更多&lt;/a&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;&lt;a href="history"&gt;历史版本下载&lt;/a&gt;</string></property><property name="toolTip"><string>在 GitHub 发布页查看完整更新说明，或下载其他版本。</string></property></widget></item>
+   <item><widget class="QProgressBar" name="progressBar"><property name="maximumSize"><size><width>16777215</width><height>6</height></size></property><property name="value"><number>0</number></property><property name="textVisible"><bool>false</bool></property></widget></item>
+   <item><widget class="QLabel" name="statusLabel"><property name="text"><string/></property><property name="wordWrap"><bool>true</bool></property><property name="styleSheet"><string>color: #6b7785;</string></property></widget></item>
+   <item><layout class="QHBoxLayout" name="buttonLayout">
+    <item><spacer name="buttonSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+    <item><widget class="QPushButton" name="cancelButton"><property name="text"><string>取消</string></property><property name="autoDefault"><bool>false</bool></property></widget></item>
+    <item><widget class="QPushButton" name="installButton"><property name="text"><string>更新</string></property><property name="default"><bool>true</bool></property></widget></item>
+   </layout></item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

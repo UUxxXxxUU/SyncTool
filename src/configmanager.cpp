@@ -75,7 +75,7 @@ AppConfig ConfigManager::load(const QString &filePath)
     }
 
     const QJsonArray selectedTypesArray = root.value("selectedFileTypes").toArray();
-    if (!selectedTypesArray.isEmpty()) {
+    if (root.contains("selectedFileTypes")) {
         config.selectedFileTypes.clear();
         for (const QJsonValue &value : selectedTypesArray) {
             const QString type = value.toString().trimmed().toLower();
@@ -91,6 +91,18 @@ AppConfig ConfigManager::load(const QString &filePath)
         if (!config.fileTypes.contains(type)) {
             config.fileTypes.append(type);
         }
+    }
+
+    for (const QJsonValue &value : root.value("syncRules").toArray()) {
+        if (!value.isObject()) continue;
+        const QJsonObject item = value.toObject();
+        SyncRule rule;
+        rule.relativePath = item.value("relativePath").toString().trimmed();
+        rule.enabled = item.value("enabled").toBool(true);
+        for (const QJsonValue &type : item.value("fileTypes").toArray()) {
+            rule.fileTypes.append(type.toString());
+        }
+        config.syncRules.append(rule);
     }
 
     const QJsonArray hostsArray = root.value("hosts").toArray();
@@ -153,6 +165,18 @@ bool ConfigManager::save(const QString &filePath, const AppConfig &config, QStri
         }
     }
     root.insert("selectedFileTypes", selectedTypesArray);
+
+    QJsonArray rulesArray;
+    for (const SyncRule &rule : config.syncRules) {
+        QJsonObject item;
+        item.insert("relativePath", rule.relativePath);
+        item.insert("enabled", rule.enabled);
+        QJsonArray types;
+        for (const QString &type : rule.fileTypes) types.append(type);
+        item.insert("fileTypes", types);
+        rulesArray.append(item);
+    }
+    root.insert("syncRules", rulesArray);
 
     QJsonArray hostsArray;
     for (const HostEntry &host : config.hosts) {

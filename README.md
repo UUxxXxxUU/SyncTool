@@ -1,6 +1,6 @@
 ﻿# 远程 Release 同步工具
 
-这是一个基于 `Qt Widgets + CMake` 的 Windows 桌面工具，用来把本地 `release` 目录里的指定类型文件自动同步到多台远程主机共享目录。
+这是一个基于 `Qt Widgets` 的 Windows 桌面工具，用来把本地 Release 目录中的指定类型文件，以及相对路径规则选中的资源文件，自动同步到多台远程主机共享目录。支持 Visual Studio、CMake 和 qmake 构建。
 
 ## 已实现功能
 
@@ -8,6 +8,8 @@
 - 可新增、更新、删除远程主机
 - 每台主机支持保存共享目录、账号、密码、是否启用
 - 可选择同步类型，例如 `dll`、`exe`、`pdb`
+- 附加同步规则支持 `./image`、`../Lang`、多级相对路径和单个文件，可独立筛选类型或同步全部文件
+- 主窗口与自定义弹窗使用 `.ui` 布局，可在 Qt Designer 中编辑
 - 支持手动“立即同步”
 - 支持轮询本地目录变化后自动同步
 - 每台主机都有独立进度条和状态颜色
@@ -97,7 +99,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 
 
 脚本核对 `src/main.cpp`、`CMakeLists.txt`、`update.json` 的版本，使用 `v版本` 标签、本次提交和 `update.json` 中的更新说明创建草稿，并上传 ZIP、SHA256 文件。已有同名 Release 会报错，已有标签必须指向同一提交；不会覆盖附件或正式发布。若上传途中失败，保留本地产物，GitHub 可能已留下草稿，需在网页检查后处理再重试。
 
-在未安装 Qt 的 Windows 10/11 x64 电脑中，将 ZIP 解压到有写入权限的目录，检查软件启动、HTTPS 更新检测及断网时 Ctrl 连续点击共享目录的行为。确认后打开 [GitHub Releases](https://github.com/UUxxXxxUU/SyncTool/releases)，编辑草稿并点击发布。草稿只有有权限的用户可见；公开发布完成后再更新线上 `update.json`。当前源码中的 1.0.1 更新清单已推送，需要补齐对应发行包。
+在未安装 Qt 的 Windows 10/11 x64 电脑中，将 ZIP 解压到有写入权限的目录，检查软件启动、HTTPS 更新检测及断网时 Ctrl 连续点击共享目录的行为。确认后打开 [GitHub Releases](https://github.com/UUxxXxxUU/SyncTool/releases)，编辑草稿并点击发布。草稿只有有权限的用户可见；公开发布完成后再更新线上 `update.json`。
 
 ## 使用说明
 
@@ -110,6 +112,37 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 
 7. 打开“检测到本地文件变化后自动同步”后，程序会按扫描间隔自动检测本地变化并同步。
 8. 窗口标题显示当前软件版本。程序每 2 小时自动检查更新；右下角“启动时检查更新”默认关闭，勾选后会在下次启动 3 秒后额外检查一次。有新版时“检查更新”按钮显示呼吸提示，点击可查看分类更新说明，选择“更新”在程序内下载并安装新版本，也可前往发布页或下载历史版本。
 9. 右下角“无感更新”默认关闭。勾选后，发现新版本会在后台下载并校验安装包，在没有同步/检查任务运行、没有弹窗且主窗口不在前台时，自动安装到当前程序所在目录并重启程序（原来缩在托盘的仍保持在托盘）。
+
+## 附加同步规则（1.0.8 起）
+
+Release 目录是两端路径的基准。例如本地 `D:\test sync\a\Release`、远端 `\\SERVER\b\Release`：
+
+| 规则路径 | 文件类型 | 本地路径 | 远端路径 |
+| --- | --- | --- | --- |
+| `./image` | `png;jpg` | `a\Release\image` | `b\Release\image` |
+| `./Lang` | `.qm` | `a\Release\Lang` | `b\Release\Lang` |
+| `../Lang` | `.qm` | `a\Lang` | `b\Lang` |
+| `../resources/theme` | 留空 | `a\resources\theme` | `b\resources\theme` |
+| `../config.ini` | 留空 | `a\config.ini` | `b\config.ini` |
+
+在“附加同步规则”Tab 中点击“添加规则”，填写相对路径及可选的文件类型。可浏览选择目录或单个文件，软件会自动转换为相对 Release 的路径。`png`、`.png` 和 `*.png` 都可填写，多种类型用分号分隔；留空表示全部文件，包括无扩展名文件。目录规则递归复制子目录中的文件，不单独创建空目录。
+
+选择主机后可查看对应的目标路径预览。规则配置应用于所有启用主机，与基本同步一起执行；切换 Tab 不影响同步范围。小屏幕或高缩放下，上方配置区可滚动，下方主机状态仍保持可见。重叠规则按并集选择文件，同一文件只复制一次。取消全部基本同步类型后也可仅运行附加规则。切换 Release 目录后，规则以新的目录重新解析。
+
+`../` 可以进入远端 Release 的上级，但不能超出共享根目录，例如 `\\SERVER\b`。路径不存在、文件与目录冲突、包含符号链接或目录联接时，会显示错误。远端多余文件保留，差异检查只覆盖选中的类型和规则范围。旧配置中没有 `syncRules` 时保持原来的同步位置和筛选；新配置请配合 1.0.8 或更新版本使用。
+
+## 界面维护与验证
+
+固定布局保存在 `src/mainwindow.ui`、`syncruledialog.ui`、`usagetipsdialog.ui`、`updatedialog.ui`、`recentcopypreview.ui`。请用 Qt Designer 编辑 `.ui`，不要编辑构建时生成的 `ui_*.h`。信号连接、主机行、进度条及按更新数据生成的分类内容仍在 C++ 中处理。
+
+回归测试使用独立临时目录，覆盖真实 robocopy 复制、类型筛选、相对路径、去重、配置兼容、自动同步、取消和界面操作。Windows 的真实 UNC 测试使用当前账号访问本机管理共享，需具有相应权限：
+
+```powershell
+cmake -S . -B build -DSYNC_BUILD_TESTS=ON
+cmake --build build --config Release
+# Qt 的 bin 应在 PATH 中，plugins 可通过 QT_PLUGIN_PATH 指定。
+ctest --test-dir build -C Release --output-on-failure
+```
 
 ## 软件更新发布
 

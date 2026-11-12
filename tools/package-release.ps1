@@ -227,7 +227,7 @@ New-Item -ItemType Directory -Path $buildDir, $stageDir | Out-Null
 # The project fixes moc and object paths under Release; build an isolated source copy with those paths intact.
 $buildProjectPath = Join-Path $buildDir 'RemoteReleaseSync.vcxproj'
 Copy-Item -LiteralPath $projectPath -Destination $buildProjectPath
-$sourceItems = @($projectXml.SelectNodes("//*[local-name()='ItemGroup']/*[@Include and (local-name()='ClCompile' or local-name()='ClInclude' or local-name()='QtMoc')]"))
+$sourceItems = @($projectXml.SelectNodes("//*[local-name()='ItemGroup']/*[@Include and (local-name()='ClCompile' or local-name()='ClInclude' or local-name()='QtMoc' or local-name()='QtUic')]"))
 if ($sourceItems.Count -eq 0) { throw 'No source files were found in the Visual Studio project.' }
 $rootPrefix = $projectRoot.TrimEnd([char[]]@('\', '/')) + '\'
 foreach ($item in $sourceItems) {

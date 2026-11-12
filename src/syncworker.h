@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "appconfig.h"
+#include "syncplan.h"
 
 #include <atomic>
 #include <memory>
@@ -25,13 +26,7 @@ public:
     };
     Q_ENUM(VisualState)
 
-    struct LocalFile
-    {
-        QString absolutePath;
-        QString relativePath;
-        qint64 size = 0;
-        qint64 modifiedMs = 0;
-    };
+    using LocalFile = SyncPlan::File;
 
     struct ComparisonSummary
     {
@@ -46,7 +41,8 @@ public:
         QStringList extraFiles;
     };
 
-    SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes, bool performCopy, QObject *parent = nullptr);
+    SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes, bool performCopy,
+               QVector<SyncRule> rules = {}, QObject *parent = nullptr);
     void emitProgress(int percent, const QString &detail);
     void emitRecentFiles(const QStringList &files, const QString &title);
     bool isCancelled() const;
@@ -85,6 +81,7 @@ private:
     HostEntry m_host;
     QString m_releaseDir;
     QStringList m_fileTypes;
+    QVector<SyncRule> m_rules;
     bool m_performCopy = false;
     std::shared_ptr<std::atomic<bool>> m_cancelled;
 };
