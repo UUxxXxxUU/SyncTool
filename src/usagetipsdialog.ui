@@ -37,7 +37,7 @@
       <item>
         <widget class="QLabel" name="intro">
           <property name="text">
-            <string>随时点击底部「使用技巧」或按 F1 查看。附加规则可同步 Release 内部或同级目录。</string>
+              <string>随时通过「帮助 → 使用技巧」或按 F1 查看。附加规则可同步 Release 内部或同级目录。</string>
           </property>
           <property name="wordWrap">
             <bool>true</bool>

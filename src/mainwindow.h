@@ -39,11 +39,11 @@ class QTableWidget;
 class QTableWidgetItem;
 class QThread;
 class QTimer;
-class QVariantAnimation;
 QT_END_NAMESPACE
 
 class SyncWorker;
 class RecentCopyPreview;
+class SyncCompletionToast;
 namespace Ui { class MainWindow; }
 
 // 更新说明中的一个分类，例如“修复问题”“新增功能”。
@@ -103,6 +103,9 @@ private:
     };
 
     void setupUi();
+    void showPreferences();
+    bool applyPreferences(const AppConfig &preferences, QString *errorMessage);
+    void updateSettingsSummary();
     void showUsageTips();
     void editSyncRule(bool editExisting);
     void removeSyncRule();
@@ -113,7 +116,7 @@ private:
     void requestUpdateInfo(bool useRawFallback);
     void finishUpdateCheck(const QString &errorMessage = QString());
     void showAvailableUpdate();
-    void updateCheckButton();
+    void updateUpdateIndicators();
     void stopUpdateChecks();
     void openUpdateUrl(const QUrl &url);
     void showUpdateHistoryLink(const QString &message);
@@ -159,6 +162,7 @@ private:
     bool setSystemAutoStartEnabled(bool enabled, QString *errorMessage = nullptr) const;
 
     std::unique_ptr<Ui::MainWindow> m_ui;
+    std::unique_ptr<SyncCompletionToast> m_syncCompletionToast;
     AppConfig m_config;
     QString m_configPath;
     bool m_manageSystemStartup = true;
@@ -176,17 +180,11 @@ private:
     QComboBox *m_releaseDirEdit = nullptr;
     QListWidget *m_typeList = nullptr;
     QLineEdit *m_newTypeEdit = nullptr;
-    QCheckBox *m_autoSyncCheck = nullptr;
     QPointer<QDialog> m_usageTipsDialog;
-    QCheckBox *m_startWithSystemCheck = nullptr;
-    QCheckBox *m_checkUpdatesOnStartupCheck = nullptr;
-    QCheckBox *m_silentUpdateCheck = nullptr;
-    QSpinBox *m_intervalSpin = nullptr;
-    QPushButton *m_checkUpdatesButton = nullptr;
+    QPointer<QDialog> m_preferencesDialog;
     QNetworkAccessManager *m_updateNetworkManager = nullptr;
     QPointer<QNetworkReply> m_updateReply;
     QTimer *m_updateCheckTimer = nullptr;
-    QVariantAnimation *m_updatePulse = nullptr;
     bool m_updateCheckInProgress = false;
     bool m_updateCheckInteractive = false;
     bool m_updateDialogOpen = false;

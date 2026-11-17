@@ -52,11 +52,11 @@
                 <item>
                   <widget class="QGroupBox" name="localGroup">
                     <property name="title">
-                      <string>本地目录与同步选项</string>
+                      <string>本地目录与同步规则</string>
                     </property>
                     <layout class="QVBoxLayout" name="localLayout">
                       <item>
-                        <layout class="QHBoxLayout" name="dirLayout" stretch="0,1,0">
+                        <layout class="QHBoxLayout" name="dirLayout" stretch="0,1,0,0,0,0">
                           <item>
                             <widget class="QLabel" name="dirLabel">
                               <property name="text">
@@ -81,6 +81,9 @@
                               </property>
                             </widget>
                           </item>
+                          <item><widget class="QPushButton" name="refreshButton"><property name="text"><string>刷新状态</string></property></widget></item>
+                          <item><widget class="QPushButton" name="syncButton"><property name="text"><string>手动同步</string></property></widget></item>
+                          <item><widget class="QPushButton" name="stopButton"><property name="text"><string>停止全部</string></property></widget></item>
                         </layout>
                       </item>
                       <item>
@@ -236,85 +239,6 @@
                             </layout>
                           </widget>
                         </widget>
-                      </item>
-                      <item>
-                        <layout class="QHBoxLayout" name="optionRow">
-                          <item>
-                            <widget class="QCheckBox" name="autoSyncCheck">
-                              <property name="text">
-                                <string>检测到本地文件变化后自动同步</string>
-                              </property>
-                            </widget>
-                          </item>
-                          <item>
-                            <widget class="QCheckBox" name="startWithSystemCheck">
-                              <property name="text">
-                                <string>开机自动启动</string>
-                              </property>
-                            </widget>
-                          </item>
-                          <item>
-                            <widget class="QLabel" name="intervalLabel">
-                              <property name="text">
-                                <string>扫描间隔</string>
-                              </property>
-                            </widget>
-                          </item>
-                          <item>
-                            <widget class="QSpinBox" name="intervalSpin">
-                              <property name="suffix">
-                                <string> 秒</string>
-                              </property>
-                              <property name="minimum">
-                                <number>1</number>
-                              </property>
-                              <property name="maximum">
-                                <number>3600</number>
-                              </property>
-                            </widget>
-                          </item>
-                          <item>
-                            <spacer name="optionSpacer">
-                              <property name="orientation">
-                                <enum>Qt::Horizontal</enum>
-                              </property>
-                              <property name="sizeHint" stdset="0">
-                                <size>
-                                  <width>10</width>
-                                  <height>20</height>
-                                </size>
-                              </property>
-                            </spacer>
-                          </item>
-                          <item>
-                            <widget class="QPushButton" name="saveConfigButton">
-                              <property name="text">
-                                <string>保存配置</string>
-                              </property>
-                            </widget>
-                          </item>
-                          <item>
-                            <widget class="QPushButton" name="refreshButton">
-                              <property name="text">
-                                <string>刷新状态</string>
-                              </property>
-                            </widget>
-                          </item>
-                          <item>
-                            <widget class="QPushButton" name="syncButton">
-                              <property name="text">
-                                <string>手动同步</string>
-                              </property>
-                            </widget>
-                          </item>
-                          <item>
-                            <widget class="QPushButton" name="stopButton">
-                              <property name="text">
-                                <string>停止全部</string>
-                              </property>
-                            </widget>
-                          </item>
-                        </layout>
                       </item>
                     </layout>
                   </widget>
@@ -527,6 +451,22 @@
         </item>
       </layout>
     </widget>
+    <widget class="QMenuBar" name="menubar">
+      <widget class="QMenu" name="settingsMenu">
+        <property name="title"><string>设置(&amp;S)</string></property>
+        <addaction name="autoSyncAction" />
+        <addaction name="separator" />
+        <addaction name="preferencesAction" />
+        <addaction name="saveConfigAction" />
+      </widget>
+      <widget class="QMenu" name="helpMenu">
+        <property name="title"><string>帮助(&amp;H)</string></property>
+        <addaction name="usageTipsAction" />
+        <addaction name="checkUpdatesAction" />
+      </widget>
+      <addaction name="settingsMenu" />
+      <addaction name="helpMenu" />
+    </widget>
     <widget class="QStatusBar" name="statusbar">
       <widget class="QWidget" name="statusControls">
         <layout class="QHBoxLayout" name="statusLayout">
@@ -542,46 +482,37 @@
           <property name="bottomMargin">
             <number>0</number>
           </property>
-          <item>
-            <widget class="QPushButton" name="usageTipsButton">
-              <property name="text">
-                <string>使用技巧</string>
-              </property>
-              <property name="toolTip">
-                <string>查看快捷操作和隐藏功能（F1）</string>
-              </property>
-            </widget>
-          </item>
-          <item>
-            <widget class="QCheckBox" name="checkUpdatesOnStartupCheck">
-              <property name="text">
-                <string>启动时检查更新</string>
-              </property>
-              <property name="toolTip">
-                <string>下次启动时额外检查更新；每 2 小时的定时检查始终运行。</string>
-              </property>
-            </widget>
-          </item>
-          <item>
-            <widget class="QCheckBox" name="silentUpdateCheck">
-              <property name="text">
-                <string>无感更新</string>
-              </property>
-              <property name="toolTip">
-                <string>发现新版本后在后台下载安装包，没有同步任务运行时自动安装并重启程序。</string>
-              </property>
-            </widget>
-          </item>
-          <item>
-            <widget class="QPushButton" name="checkUpdatesButton">
-              <property name="text">
-                <string>检查更新</string>
-              </property>
-            </widget>
-          </item>
+          <item><widget class="QLabel" name="settingsSummaryLabel">
+            <property name="text"><string>自动同步：关闭 · 扫描间隔：5 秒</string></property>
+            <property name="textFormat"><enum>Qt::RichText</enum></property>
+            <property name="toolTip"><string>点击打开偏好设置</string></property>
+            <property name="textInteractionFlags"><set>Qt::LinksAccessibleByKeyboard|Qt::LinksAccessibleByMouse</set></property>
+          </widget></item>
+          <item><widget class="QLabel" name="updateNoticeLabel">
+            <property name="visible"><bool>false</bool></property>
+            <property name="text"><string /> </property>
+            <property name="textFormat"><enum>Qt::RichText</enum></property>
+            <property name="textInteractionFlags"><set>Qt::LinksAccessibleByKeyboard|Qt::LinksAccessibleByMouse</set></property>
+          </widget></item>
         </layout>
       </widget>
     </widget>
+    <action name="autoSyncAction">
+      <property name="checkable"><bool>true</bool></property>
+      <property name="text"><string>自动同步</string></property>
+      <property name="toolTip"><string>检测到本地文件变化后自动同步</string></property>
+    </action>
+    <action name="preferencesAction">
+      <property name="text"><string>偏好设置...</string></property>
+      <property name="shortcut"><string>Ctrl+,</string></property>
+    </action>
+    <action name="saveConfigAction">
+      <property name="text"><string>保存配置</string></property>
+      <property name="shortcut"><string>Ctrl+S</string></property>
+    </action>
+    <action name="checkUpdatesAction">
+      <property name="text"><string>检查更新...</string></property>
+    </action>
     <action name="usageTipsAction">
       <property name="text">
         <string>使用技巧</string>
