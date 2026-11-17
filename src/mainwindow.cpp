@@ -1819,6 +1819,8 @@ void MainWindow::addToReleaseDirHistory(const QString &path)
 void MainWindow::loadConfiguration()
 {
     m_config = ConfigManager::load(m_configPath);
+    // Preserve the former spin box's limits before starting the polling timer.
+    m_config.scanIntervalSeconds = qBound(1, m_config.scanIntervalSeconds, 3600);
     const bool systemAutoStartEnabled = m_manageSystemStartup && isSystemAutoStartEnabled();
     if (m_manageSystemStartup && m_config.startWithSystem && !systemAutoStartEnabled) {
         QString error;
