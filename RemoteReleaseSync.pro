@@ -32,4 +32,4 @@ FORMS += \
     src/updatedialog.ui
 
 win32:RC_FILE = resources/app.rc
-win32:LIBS += -lMpr -lShell32
+win32:LIBS += -lMpr -lShell32 -lUser32

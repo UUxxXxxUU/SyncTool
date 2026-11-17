@@ -40,7 +40,7 @@ target_link_libraries(RemoteReleaseSync PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Q
 
 if (WIN32)
     target_sources(RemoteReleaseSync PRIVATE resources/app.rc)
-    target_link_libraries(RemoteReleaseSync PRIVATE Mpr Shell32)
+    target_link_libraries(RemoteReleaseSync PRIVATE Mpr Shell32 User32)
 endif()
 
 if (QT_VERSION_MAJOR EQUAL 6)
@@ -65,7 +65,7 @@ if (SYNC_BUILD_TESTS)
     target_link_libraries(SyncToolTests PRIVATE Qt${QT_VERSION_MAJOR}::Test
         Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network)
     if (WIN32)
-        target_link_libraries(SyncToolTests PRIVATE Mpr Shell32)
+        target_link_libraries(SyncToolTests PRIVATE Mpr Shell32 User32)
     endif()
     add_test(NAME SyncToolTests COMMAND SyncToolTests)
     set_tests_properties(SyncToolTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
