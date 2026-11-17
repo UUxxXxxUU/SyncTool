@@ -855,6 +855,24 @@ private slots:
         QVERIFY(!ConfigManager::load(configPath()).autoSync);
         QVERIFY(main->findChild<QLabel *>("settingsSummaryLabel")->text().contains("自动同步：关闭"));
     }
+    void scanIntervalBoundsRemainCompatible()
+    {
+        for (int interval : {0, 1, 5, 3600, 3601, 2147483647}) {
+            AppConfig config;
+            config.releaseDir = source();
+            config.autoSync = false;
+            config.scanIntervalSeconds = interval;
+            QString error;
+            QVERIFY(ConfigManager::save(configPath(), config, &error));
+            MainWindow main(nullptr, configPath(), false);
+            stopTimers(main);
+            const int expected = qBound(1, interval, 3600);
+            QCOMPARE(main.findChild<QTimer *>("pollTimer")->interval(), expected * 1000);
+            QVERIFY(main.findChild<QLabel *>("settingsSummaryLabel")->text().contains(QString::number(expected) + " 秒"));
+            main.findChild<QAction *>("saveConfigAction")->trigger();
+            QCOMPARE(ConfigManager::load(configPath()).scanIntervalSeconds, expected);
+        }
+    }
 };
 
 QTEST_MAIN(SyncTests)
