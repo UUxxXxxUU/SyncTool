@@ -8,6 +8,7 @@ SOURCES += \
     src/configmanager.cpp \
     src/main.cpp \
     src/mainwindow.cpp \
+    src/synccompletiontoast.cpp \
     src/syncplan.cpp \
     src/syncworker.cpp
 
@@ -15,6 +16,7 @@ HEADERS += \
     src/appconfig.h \
     src/configmanager.h \
     src/mainwindow.h \
+    src/synccompletiontoast.h \
     src/syncplan.h \
     src/syncworker.h
 
@@ -22,6 +24,8 @@ RESOURCES += resources/app.qrc
 
 FORMS += \
     src/mainwindow.ui \
+    src/preferencesdialog.ui \
+    src/synccompletiontoast.ui \
     src/syncruledialog.ui \
     src/usagetipsdialog.ui \
     src/recentcopypreview.ui \

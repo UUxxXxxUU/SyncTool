@@ -40,6 +40,7 @@
     <ClCompile Include="src\mainwindow.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\synccompletiontoast.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\syncworker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -54,6 +55,7 @@
     <QtMoc Include="src\mainwindow.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <QtMoc Include="src\synccompletiontoast.h"><Filter>Header Files</Filter></QtMoc>
     <QtMoc Include="src\syncworker.h">
       <Filter>Header Files</Filter>
     </QtMoc>
@@ -70,6 +72,8 @@
     <ClCompile Include="src\syncplan.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClInclude Include="src\syncplan.h"><Filter>Header Files</Filter></ClInclude>
     <QtUic Include="src\mainwindow.ui"><Filter>Resource Files</Filter></QtUic>
+    <QtUic Include="src\preferencesdialog.ui"><Filter>Resource Files</Filter></QtUic>
+    <QtUic Include="src\synccompletiontoast.ui"><Filter>Resource Files</Filter></QtUic>
     <QtUic Include="src\syncruledialog.ui"><Filter>Resource Files</Filter></QtUic>
     <QtUic Include="src\usagetipsdialog.ui"><Filter>Resource Files</Filter></QtUic>
     <QtUic Include="src\recentcopypreview.ui"><Filter>Resource Files</Filter></QtUic>

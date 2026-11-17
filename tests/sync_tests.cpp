@@ -3,6 +3,7 @@
 #include "mainwindow.h"
 #include "syncplan.h"
 #include "syncworker.h"
+#include "synccompletiontoast.h"
 
 #include <QtTest>
 #include <QAction>
@@ -12,6 +13,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -20,12 +22,15 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
+#include <QMenuBar>
 #include <QPushButton>
 #include <QProgressBar>
 #include <QProcess>
 #include <QSettings>
 #include <QScreen>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -82,6 +87,45 @@ Run runWorker(const QString &source, const QString &target, const QStringList &t
     worker.process();
     return run;
 }
+
+class ToastEvents : public QObject
+{
+public:
+    QStringList messages;
+    QVector<qint64> shownAt;
+    QElapsedTimer clock;
+    explicit ToastEvents(SyncCompletionToast *toast)
+    {
+        clock.start();
+        toast->installEventFilter(this);
+    }
+protected:
+    bool eventFilter(QObject *object, QEvent *event) override
+    {
+        if (event->type() == QEvent::Show) {
+            auto *toast = qobject_cast<SyncCompletionToast *>(object);
+            messages.append(toast->findChild<QLabel *>("messageLabel")->text());
+            shownAt.append(clock.elapsed());
+        }
+        return QObject::eventFilter(object, event);
+    }
+};
+
+SyncCompletionToast *completionToast()
+{
+    for (QWidget *widget : QApplication::topLevelWidgets()) {
+        if (auto *toast = qobject_cast<SyncCompletionToast *>(widget)) return toast;
+    }
+    return nullptr;
+}
+
+bool workersAreIdle(MainWindow &window)
+{
+    for (QThread *thread : window.findChildren<QThread *>()) {
+        if (thread->isRunning()) return false;
+    }
+    return true;
+}
 }
 
 class SyncTests : public QObject
@@ -125,7 +169,7 @@ private slots:
         QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");
         QApplication::setFont(QFont("Microsoft YaHei", 10));
         QApplication::setWindowIcon(QIcon(":/icons/app_32.png"));
-        QApplication::setApplicationVersion("1.0.8");
+        QApplication::setApplicationVersion("1.0.9");
         QSettings settings(startupKey, QSettings::NativeFormat);
         m_hadStartup = settings.contains("RemoteReleaseSync");
         m_originalStartup = settings.value("RemoteReleaseSync").toString();
@@ -424,12 +468,12 @@ private slots:
     {
         auto main = window();
         main->show();
-        auto *button = main->findChild<QPushButton *>("usageTipsButton");
-        QVERIFY(button);
-        button->click();
+        auto *action = main->findChild<QAction *>("usageTipsAction");
+        QVERIFY(action);
+        action->trigger();
         QDialog *tips = main->findChild<QDialog *>("UsageTipsDialog");
         QVERIFY(tips);
-        button->click();
+        action->trigger();
         QCOMPARE(main->findChildren<QDialog *>("UsageTipsDialog").size(), 1);
         const QString screenshot = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
         if (!screenshot.isEmpty()) tips->grab().save(screenshot + "/usage-tips.png");
@@ -445,19 +489,371 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(main.get(), "handleHostTableCellDoubleClicked", Q_ARG(int, 0), Q_ARG(int, 1)));
         QCOMPARE(QApplication::clipboard()->text(), QString("SERVER-QA"));
     }
+    void completionToastQueuesAndExpiresWithoutTakingFocus()
+    {
+        QWidget anchor;
+        QLineEdit input(&anchor);
+        anchor.resize(300, 100);
+        anchor.show();
+        input.setFocus();
+        QTest::qWait(50);
+        QWidget *focused = QApplication::focusWidget();
+#ifdef Q_OS_WIN
+        const HWND foreground = GetForegroundWindow();
+#endif
+        SyncCompletionToast toast(&anchor);
+        ToastEvents events(&toast);
+        auto *label = toast.findChild<QLabel *>("messageLabel");
+        QVERIFY(label);
+        toast.enqueue("SERVER-A");
+        toast.enqueue("SERVER-B");
+        QVERIFY(toast.isVisible());
+        QCOMPARE(label->text(), QString("SERVER-A 同步完成"));
+        QCOMPARE(QApplication::focusWidget(), focused);
+#ifdef Q_OS_WIN
+        if (QGuiApplication::platformName() == "windows") {
+            QCOMPARE(GetForegroundWindow(), foreground);
+            const LONG_PTR style = GetWindowLongPtrW(reinterpret_cast<HWND>(toast.winId()), GWL_EXSTYLE);
+            QVERIFY(style & WS_EX_NOACTIVATE);
+            QVERIFY(style & WS_EX_TRANSPARENT);
+            QVERIFY(style & WS_EX_TOOLWINDOW);
+        }
+#endif
+        QVERIFY(toast.windowFlags().testFlag(Qt::FramelessWindowHint));
+        QVERIFY(toast.windowFlags().testFlag(Qt::WindowStaysOnTopHint));
+        QVERIFY(toast.testAttribute(Qt::WA_TranslucentBackground));
+        QVERIFY(!label->wordWrap());
+        const QString screenshot = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
+        if (!screenshot.isEmpty()) {
+            QDir().mkpath(screenshot);
+            QVERIFY(toast.grab().save(screenshot + "/completion-toast.png"));
+        }
+        // Hiding the owner to the tray must leave the notification visible.
+        anchor.hide();
+        QVERIFY(toast.isVisible());
+        QTest::qWait(800);
+        QCOMPARE(label->text(), QString("SERVER-A 同步完成"));
+        QTRY_COMPARE_WITH_TIMEOUT(events.messages.size(), 2, 2000);
+        QCOMPARE(events.messages, QStringList({"SERVER-A 同步完成", "SERVER-B 同步完成"}));
+        QVERIFY(events.shownAt.at(1) - events.shownAt.at(0) >= 950);
+        QVERIFY(toast.isVisible());
+        QTest::qWait(800);
+        QVERIFY(toast.isVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(!toast.isVisible(), 2000);
+        QVERIFY(events.clock.elapsed() - events.shownAt.at(1) >= 950);
+#ifdef Q_OS_WIN
+        if (QGuiApplication::platformName() == "windows")
+            QVERIFY(GetForegroundWindow() != reinterpret_cast<HWND>(toast.winId()));
+#endif
+    }
+    void completionToastFitsLongNamesAndDismissClearsQueue()
+    {
+        QWidget anchor;
+        SyncCompletionToast toast(&anchor);
+        ToastEvents events(&toast);
+        toast.enqueue(QString("很长的主机名称 <SERVER> ").repeated(20) + "\nEND");
+        auto *label = toast.findChild<QLabel *>("messageLabel");
+        QVERIFY(label);
+        QCOMPARE(label->textFormat(), Qt::PlainText);
+        QVERIFY(!label->text().contains('\n'));
+        QVERIFY(label->text().endsWith(" 同步完成"));
+        QVERIFY(label->text().contains(QChar(0x2026)));
+        QVERIFY(label->fontMetrics().horizontalAdvance(label->text()) <= label->contentsRect().width());
+        QScreen *screen = QGuiApplication::screenAt(toast.frameGeometry().center());
+        QVERIFY(screen);
+        QVERIFY(screen->availableGeometry().contains(toast.frameGeometry()));
+        const QString screenshot = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
+        if (!screenshot.isEmpty()) {
+            QDir().mkpath(screenshot);
+            QVERIFY(toast.grab().save(screenshot + "/completion-toast-long.png"));
+        }
+        toast.enqueue("QUEUED");
+        toast.dismiss();
+        QVERIFY(!toast.isVisible());
+        QTest::qWait(1100);
+        QCOMPARE(events.messages.size(), 1);
+        QVERIFY(!toast.isVisible());
+        toast.enqueue("NEW");
+        QCOMPARE(events.messages.last(), QString("NEW 同步完成"));
+        toast.dismiss();
+    }
+    void successfulCopiesNotifyPerHostWhileHiddenButChecksStayQuiet()
+    {
+        QVERIFY(writeFile(source() + "/app.exe", "toast-copy"));
+        auto main = window();
+        auto *toast = completionToast();
+        QVERIFY(toast);
+        ToastEvents events(toast);
+        main->findChild<QLineEdit *>("hostNameEdit")->setText("第二台主机");
+        main->findChild<QLineEdit *>("hostPathEdit")->setText(target() + "-second");
+        main->findChild<QPushButton *>("addHostButton")->click();
+        QCOMPARE(ConfigManager::load(configPath()).hosts.size(), 2);
+        QVERIFY(!main->isVisible());
+        main->findChild<QPushButton *>("syncButton")->click();
+        QTRY_COMPARE_WITH_TIMEOUT(events.messages.size(), 2, 15000);
+        QVERIFY(events.messages.contains("测试主机 同步完成"));
+        QVERIFY(events.messages.contains("第二台主机 同步完成"));
+        QVERIFY(events.shownAt.at(1) - events.shownAt.at(0) >= 950);
+        QVERIFY(toast->isVisible());
+        QVERIFY(!main->isVisible());
+        QCOMPARE(readFile(target() + "/app.exe"), QByteArray("toast-copy"));
+        QCOMPARE(readFile(target() + "-second/app.exe"), QByteArray("toast-copy"));
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(*main), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!toast->isVisible(), 3000);
+        // A subsequent no-op sync and an explicit check must produce no toast.
+        main->findChild<QPushButton *>("syncButton")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(*main), 15000);
+        main->findChild<QPushButton *>("refreshButton")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(*main), 15000);
+        QTest::qWait(100);
+        QCOMPARE(events.messages.size(), 2);
+        QVERIFY(!toast->isVisible());
+    }
+    void failedHostDoesNotSuppressSuccessfulHostNotification()
+    {
+        QVERIFY(writeFile(source() + "/app.exe", "one-success"));
+        QVERIFY(writeFile(target() + "-blocked", "not a directory"));
+        auto main = window();
+        auto *toast = completionToast();
+        QVERIFY(toast);
+        ToastEvents events(toast);
+        main->findChild<QLineEdit *>("hostNameEdit")->setText("失败主机");
+        main->findChild<QLineEdit *>("hostPathEdit")->setText(target() + "-blocked");
+        main->findChild<QPushButton *>("addHostButton")->click();
+        main->findChild<QPushButton *>("syncButton")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(*main), 15000);
+        QTRY_COMPARE_WITH_TIMEOUT(events.messages.size(), 1, 3000);
+        QCOMPARE(events.messages.first(), QString("测试主机 同步完成"));
+        const auto hosts = ConfigManager::load(configPath()).hosts;
+        QVERIFY(hosts.at(0).lastSyncUtc.isValid());
+        QVERIFY(!hosts.at(1).lastSyncUtc.isValid());
+        QCOMPARE(readFile(target() + "/app.exe"), QByteArray("one-success"));
+        QCOMPARE(readFile(target() + "-blocked"), QByteArray("not a directory"));
+    }
+    void cancelledSyncDoesNotNotify()
+    {
+        for (int i = 0; i < 80; ++i)
+            QVERIFY(writeFile(source() + QString("/d%1/app.exe").arg(i), QByteArray(1024, 'x')));
+        auto main = window();
+        auto *toast = completionToast();
+        QVERIFY(toast);
+        ToastEvents events(toast);
+        bool stopped = false;
+        QTimer stop;
+        stop.setInterval(5);
+        connect(&stop, &QTimer::timeout, [&]() {
+            if (main->findChild<QTableWidget *>("hostTable")->item(0, 5)->text() == "同步中") {
+                stop.stop(); stopped = true;
+                main->findChild<QPushButton *>("stopButton")->click();
+            }
+        });
+        stop.start();
+        main->findChild<QPushButton *>("syncButton")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(stopped, 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(*main), 15000);
+        QTest::qWait(100);
+        QVERIFY(events.messages.isEmpty());
+        QVERIFY(!toast->isVisible());
+        QVERIFY(!ConfigManager::load(configPath()).hosts.first().lastSyncUtc.isValid());
+    }
     void autoSyncIncludesSiblingRuleAndStopDisablesIt()
     {
         QVERIFY(writeFile(source() + "/../Lang/zh.qm", "initial"));
         auto main = window({{"../Lang", {"qm"}}}, true);
+        auto *toast = completionToast();
+        QVERIFY(toast);
+        ToastEvents events(toast);
         // The startup singleShot runs the same public workflow as normal startup.
         QTRY_COMPARE_WITH_TIMEOUT(readFile(target() + "/../Lang/zh.qm"), QByteArray("initial"), 15000);
         QVERIFY(writeFile(source() + "/../Lang/zh.qm", "updated-language"));
         QTest::qWait(250);
         QTRY_VERIFY_WITH_TIMEOUT((QMetaObject::invokeMethod(main.get(), "pollForChanges"),
             readFile(target() + "/../Lang/zh.qm") == QByteArray("updated-language")), 15000);
+        QTRY_COMPARE_WITH_TIMEOUT(events.messages.size(), 2, 15000);
+        QCOMPARE(events.messages, QStringList({"测试主机 同步完成", "测试主机 同步完成"}));
         main->findChild<QPushButton *>("stopButton")->click();
-        QVERIFY(!main->findChild<QCheckBox *>("autoSyncCheck")->isChecked());
+        QVERIFY(!main->findChild<QAction *>("autoSyncAction")->isChecked());
         QVERIFY(!ConfigManager::load(configPath()).autoSync);
+    }
+    void menusAndSummaryReplaceCommonControls()
+    {
+        auto main = window();
+        main->show();
+        auto *settings = main->findChild<QMenu *>("settingsMenu");
+        auto *help = main->findChild<QMenu *>("helpMenu");
+        QVERIFY(settings && help);
+        QCOMPARE(main->menuBar()->actions().size(), 2);
+        for (const char *name : {"autoSyncAction", "preferencesAction", "saveConfigAction"})
+            QVERIFY(settings->actions().contains(main->findChild<QAction *>(name)));
+        for (const char *name : {"usageTipsAction", "checkUpdatesAction"})
+            QVERIFY(help->actions().contains(main->findChild<QAction *>(name)));
+        QVERIFY(!main->findChild<QCheckBox *>("autoSyncCheck"));
+        QVERIFY(!main->findChild<QCheckBox *>("startWithSystemCheck"));
+        QVERIFY(!main->findChild<QPushButton *>("checkUpdatesButton"));
+        QVERIFY(!main->findChild<QPushButton *>("usageTipsButton"));
+        QVERIFY(!main->findChild<QPushButton *>("saveConfigButton"));
+        auto *summary = main->findChild<QLabel *>("settingsSummaryLabel");
+        QVERIFY(summary && summary->text().contains("自动同步：关闭"));
+        QVERIFY(summary->text().contains("5 秒"));
+        QVERIFY(main->findChild<QLabel *>("updateNoticeLabel")->isHidden());
+        main->findChild<QAction *>("saveConfigAction")->trigger();
+        QVERIFY(!ConfigManager::load(configPath()).autoSync);
+        QTimer::singleShot(0, [&]() {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            QCOMPARE(dialog->objectName(), QString("PreferencesDialog"));
+            dialog->reject();
+        });
+        // Exercise the actual status-bar entry point, not just its menu action.
+        QVERIFY(QMetaObject::invokeMethod(summary, "linkActivated", Q_ARG(QString, "preferences")));
+        const QString screenshot = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
+        if (!screenshot.isEmpty()) {
+            QDir().mkpath(screenshot);
+            main->grab().save(screenshot + "/main-menus.png");
+            settings->popup(main->menuBar()->mapToGlobal(QPoint(0, main->menuBar()->height())));
+            QTest::qWait(30);
+            settings->grab().save(screenshot + "/settings-menu.png");
+            settings->hide();
+            help->popup(main->menuBar()->mapToGlobal(QPoint(70, main->menuBar()->height())));
+            QTest::qWait(30);
+            help->grab().save(screenshot + "/help-menu.png");
+            help->hide();
+        }
+    }
+    void preferencesSaveCancelAndReload()
+    {
+        QVERIFY(writeFile(source() + "/app.exe", "preferences-save"));
+        auto main = window();
+        auto *action = main->findChild<QAction *>("preferencesAction");
+        QVERIFY(action);
+        const QByteArray before = readFile(configPath());
+        auto edit = [&](bool save) {
+            QTimer::singleShot(0, [&, save]() {
+                auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                QVERIFY(dialog);
+                QVERIFY(!dialog->findChild<QCheckBox *>("autoSyncCheck")->isChecked());
+                QCOMPARE(dialog->findChild<QSpinBox *>("intervalSpin")->value(), 5);
+                dialog->findChild<QCheckBox *>("autoSyncCheck")->setChecked(true);
+                dialog->findChild<QCheckBox *>("startWithSystemCheck")->setChecked(true);
+                dialog->findChild<QCheckBox *>("checkUpdatesOnStartupCheck")->setChecked(true);
+                dialog->findChild<QCheckBox *>("silentUpdateCheck")->setChecked(true);
+                dialog->findChild<QSpinBox *>("intervalSpin")->setValue(17);
+                if (!save) {
+                    QTest::qWait(400); // Startup checks must still use the old preferences.
+                    QCOMPARE(readFile(configPath()), before);
+                    QVERIFY(!QFileInfo::exists(target() + "/app.exe"));
+                }
+                const QString screenshot = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
+                if (save && !screenshot.isEmpty()) {
+                    QDir().mkpath(screenshot);
+                    QVERIFY(dialog->grab().save(screenshot + "/preferences.png"));
+                    if (QGuiApplication::platformName() == "windows")
+                        QVERIFY(QGuiApplication::primaryScreen()->availableGeometry().contains(dialog->frameGeometry()));
+                }
+                dialog->findChild<QDialogButtonBox *>("buttonBox")->button(
+                    save ? QDialogButtonBox::Save : QDialogButtonBox::Cancel)->click();
+            });
+            action->trigger();
+        };
+        edit(false);
+        QCOMPARE(readFile(configPath()), before);
+        QVERIFY(!main->findChild<QAction *>("autoSyncAction")->isChecked());
+        edit(true);
+        const AppConfig saved = ConfigManager::load(configPath());
+        QVERIFY(saved.autoSync && saved.startWithSystem && saved.checkUpdatesOnStartup && saved.silentUpdate);
+        QCOMPARE(saved.scanIntervalSeconds, 17);
+        QCOMPARE(main->findChild<QTimer *>("pollTimer")->interval(), 17000);
+        QVERIFY(main->findChild<QAction *>("autoSyncAction")->isChecked());
+        QVERIFY(main->findChild<QLabel *>("settingsSummaryLabel")->text().contains("开启"));
+        QVERIFY(main->findChild<QLabel *>("settingsSummaryLabel")->text().contains("17 秒"));
+        QTRY_COMPARE_WITH_TIMEOUT(readFile(target() + "/app.exe"), QByteArray("preferences-save"), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(*main), 15000);
+        main.reset();
+        main = std::make_unique<MainWindow>(nullptr, configPath(), false);
+        stopTimers(*main);
+        QTimer::singleShot(0, [&]() {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            for (const char *name : {"autoSyncCheck", "startWithSystemCheck", "checkUpdatesOnStartupCheck", "silentUpdateCheck"})
+                QVERIFY(dialog->findChild<QCheckBox *>(name)->isChecked());
+            QCOMPARE(dialog->findChild<QSpinBox *>("intervalSpin")->value(), 17);
+            dialog->reject();
+        });
+        main->findChild<QAction *>("preferencesAction")->trigger();
+    }
+    void failedPreferenceSaveKeepsCurrentSettings()
+    {
+        QVERIFY(writeFile(source() + "/app.exe", "must-not-copy"));
+        auto main = window();
+        QTimer::singleShot(0, [&]() {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            // Make the isolated test config path unwritable as a file.
+            QVERIFY(QFile::rename(configPath(), configPath() + ".before"));
+            QVERIFY(QDir().mkpath(configPath()));
+            dialog->findChild<QCheckBox *>("autoSyncCheck")->setChecked(true);
+            dialog->findChild<QSpinBox *>("intervalSpin")->setValue(19);
+            dialog->findChild<QDialogButtonBox *>("buttonBox")->button(QDialogButtonBox::Save)->click();
+            QVERIFY(dialog->isVisible());
+            auto *error = dialog->findChild<QLabel *>("errorLabel");
+            QVERIFY(error->isVisible() && !error->text().isEmpty());
+            QVERIFY(!main->findChild<QAction *>("autoSyncAction")->isChecked());
+            QCOMPARE(main->findChild<QTimer *>("pollTimer")->interval(), 5000);
+            QVERIFY(main->findChild<QLabel *>("settingsSummaryLabel")->text().contains("5 秒"));
+            QVERIFY(!QFileInfo::exists(target() + "/app.exe"));
+            dialog->reject();
+            QVERIFY(QDir().rmdir(configPath()));
+            QVERIFY(QFile::rename(configPath() + ".before", configPath()));
+        });
+        main->findChild<QAction *>("preferencesAction")->trigger();
+        QVERIFY(!ConfigManager::load(configPath()).autoSync);
+    }
+    void preferencesPreserveCopiesCompletedWhileEditing()
+    {
+        QVERIFY(writeFile(source() + "/app.exe", "finish-during-edit"));
+        auto main = window();
+        main->findChild<QPushButton *>("syncButton")->click();
+        QDateTime completed;
+        QTimer::singleShot(0, [&]() {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            dialog->findChild<QSpinBox *>("intervalSpin")->setValue(9);
+            QTRY_VERIFY_WITH_TIMEOUT(ConfigManager::load(configPath()).hosts.first().lastSyncUtc.isValid(), 15000);
+            completed = ConfigManager::load(configPath()).hosts.first().lastSyncUtc;
+            dialog->findChild<QDialogButtonBox *>("buttonBox")->button(QDialogButtonBox::Save)->click();
+        });
+        main->findChild<QAction *>("preferencesAction")->trigger();
+        QVERIFY(completed.isValid());
+        const AppConfig saved = ConfigManager::load(configPath());
+        QCOMPARE(saved.hosts.first().lastSyncUtc, completed);
+        QCOMPARE(saved.scanIntervalSeconds, 9);
+        QCOMPARE(readFile(target() + "/app.exe"), QByteArray("finish-during-edit"));
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(*main), 15000);
+    }
+    void autoSyncMenuControlsCopiesAndStopUpdatesSummary()
+    {
+        QVERIFY(writeFile(source() + "/app.exe", "initial"));
+        auto main = window();
+        auto *action = main->findChild<QAction *>("autoSyncAction");
+        QVERIFY(action);
+        action->trigger();
+        QVERIFY(action->isChecked());
+        QTRY_COMPARE_WITH_TIMEOUT(readFile(target() + "/app.exe"), QByteArray("initial"), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(*main), 15000);
+        action->trigger();
+        QVERIFY(!action->isChecked());
+        QVERIFY(!ConfigManager::load(configPath()).autoSync);
+        QVERIFY(writeFile(source() + "/app.exe", "changed-with-auto-off"));
+        QVERIFY(QMetaObject::invokeMethod(main.get(), "pollForChanges"));
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(*main), 15000);
+        QCOMPARE(readFile(target() + "/app.exe"), QByteArray("initial"));
+        action->trigger();
+        QTRY_COMPARE_WITH_TIMEOUT(readFile(target() + "/app.exe"), QByteArray("changed-with-auto-off"), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(*main), 15000);
+        main->findChild<QPushButton *>("stopButton")->click();
+        QVERIFY(!action->isChecked());
+        QVERIFY(!ConfigManager::load(configPath()).autoSync);
+        QVERIFY(main->findChild<QLabel *>("settingsSummaryLabel")->text().contains("自动同步：关闭"));
     }
 };
 

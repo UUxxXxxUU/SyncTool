@@ -3,8 +3,10 @@
 
 #include "configmanager.h"
 #include "syncworker.h"
+#include "synccompletiontoast.h"
 #include "syncplan.h"
 #include "ui_mainwindow.h"
+#include "ui_preferencesdialog.h"
 #include "ui_syncruledialog.h"
 #include "ui_usagetipsdialog.h"
 #include "ui_recentcopypreview.h"
@@ -81,7 +83,6 @@
 #include <QToolTip>
 #include <QUrl>
 #include <QVBoxLayout>
-#include <QVariantAnimation>
 #include <QVersionNumber>
 #include <QUuid>
 #include <qdatetime.h>
@@ -406,7 +407,6 @@ static const char *kInstallerUrl = "https://github.com/UUxxXxxUU/SyncTool/releas
 static const int kInstallerStallTimeoutMs = 60000;
 static const qint64 kMaxInstallerBytes = 512LL * 1024 * 1024;
 static const int kInstallDialogResult = 2;
-static const char *kUpdateButtonStyle = "QPushButton { background-color: %1; color: #17324d; border: 1px solid #72a9df; border-radius: 3px; padding: 4px 10px; }";
 #ifdef Q_OS_WIN
 static const char *kAutoStartRunKey = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const char *kAutoStartValueName = "RemoteReleaseSync";
@@ -489,6 +489,7 @@ MainWindow::MainWindow(QWidget *parent, const QString &configPath, bool manageSy
     , m_manageSystemStartup(manageSystemStartup)
 {
     setupUi();
+    m_syncCompletionToast = std::make_unique<SyncCompletionToast>(this);
     m_copyPreview = new RecentCopyPreview(this);
     m_copyPreview->watchDetails(m_hostTable);
     loadConfiguration();
@@ -506,6 +507,7 @@ MainWindow::MainWindow(QWidget *parent, const QString &configPath, bool manageSy
     }
 
     m_pollTimer = new QTimer(this);
+    m_pollTimer->setObjectName("pollTimer");
     connect(m_pollTimer, &QTimer::timeout, this, &MainWindow::pollForChanges);
     updateTimerInterval();
     m_pollTimer->start();
@@ -517,7 +519,7 @@ MainWindow::MainWindow(QWidget *parent, const QString &configPath, bool manageSy
     statusBar()->showMessage(QString("配置文件：%1").arg(QDir::toNativeSeparators(m_configPath)), 5000);
     QTimer::singleShot(300, this, [this]() {
         if (!m_backgroundTasksPaused) {
-            startOperations(m_autoSyncCheck->isChecked());
+            startOperations(m_config.autoSync);
         }
     });
 
@@ -559,6 +561,7 @@ MainWindow::MainWindow(QWidget *parent, const QString &configPath, bool manageSy
 MainWindow::~MainWindow()
 {
     m_isClosing = true;
+    m_syncCompletionToast->dismiss();
     stopUpdateChecks();
     requestWorkersToStop();
 
@@ -581,7 +584,7 @@ bool MainWindow::event(QEvent *event)
     const bool handled = QMainWindow::event(event);
     if (event->type() == QEvent::Show || event->type() == QEvent::Hide
         || event->type() == QEvent::WindowStateChange) {
-        updateCheckButton();
+        updateUpdateIndicators();
     }
     return handled;
 }
@@ -619,6 +622,7 @@ void MainWindow::realExit()
     }
 
     m_isClosing = true;
+    m_syncCompletionToast->dismiss();
     stopUpdateChecks();
     setEnabled(false);
 
@@ -712,18 +716,12 @@ void MainWindow::setupUi()
     m_releaseDirEdit = m_ui->releaseDirEdit;
     m_typeList = m_ui->typeList;
     m_newTypeEdit = m_ui->newTypeEdit;
-    m_autoSyncCheck = m_ui->autoSyncCheck;
-    m_startWithSystemCheck = m_ui->startWithSystemCheck;
-    m_intervalSpin = m_ui->intervalSpin;
     m_hostEnabledCheck = m_ui->hostEnabledCheck;
     m_hostNameEdit = m_ui->hostNameEdit;
     m_hostPathEdit = m_ui->hostPathEdit;
     m_hostUserEdit = m_ui->hostUserEdit;
     m_hostPasswordEdit = m_ui->hostPasswordEdit;
     m_hostTable = m_ui->hostTable;
-    m_checkUpdatesOnStartupCheck = m_ui->checkUpdatesOnStartupCheck;
-    m_silentUpdateCheck = m_ui->silentUpdateCheck;
-    m_checkUpdatesButton = m_ui->checkUpdatesButton;
     m_releaseDirEdit->lineEdit()->setPlaceholderText("选择或输入本地 Release 目录路径...");
     m_ui->stopButton->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
     for (int column : {0, 1, 3, 4, 5}) {
@@ -738,9 +736,25 @@ void MainWindow::setupUi()
     m_ui->ruleTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     statusBar()->addPermanentWidget(m_ui->statusControls);
     addAction(m_ui->usageTipsAction);
-    connect(m_ui->usageTipsButton, &QPushButton::clicked, this, &MainWindow::showUsageTips);
     connect(m_ui->usageTipsAction, &QAction::triggered, this, &MainWindow::showUsageTips);
-    connect(m_checkUpdatesButton, &QPushButton::clicked, this, &MainWindow::checkForUpdates);
+    connect(m_ui->preferencesAction, &QAction::triggered, this, &MainWindow::showPreferences);
+    connect(m_ui->checkUpdatesAction, &QAction::triggered, this, &MainWindow::checkForUpdates);
+    connect(m_ui->saveConfigAction, &QAction::triggered, this, &MainWindow::saveConfiguration);
+    connect(m_ui->settingsSummaryLabel, &QLabel::linkActivated, this, [this]() { showPreferences(); });
+    connect(m_ui->updateNoticeLabel, &QLabel::linkActivated, this, [this]() { checkForUpdates(); });
+    connect(m_ui->autoSyncAction, &QAction::toggled, this, [this](bool enabled) {
+        if (m_isClosing) {
+            updateSettingsSummary();
+            return;
+        }
+        AppConfig preferences = m_config;
+        preferences.autoSync = enabled;
+        QString error;
+        if (!applyPreferences(preferences, &error)) {
+            updateSettingsSummary();
+            QMessageBox::warning(this, "保存失败", error);
+        }
+    });
     connect(m_ui->addRuleButton, &QPushButton::clicked, this, [this]() { editSyncRule(false); });
     connect(m_ui->editRuleButton, &QPushButton::clicked, this, [this]() { editSyncRule(true); });
     connect(m_ui->removeRuleButton, &QPushButton::clicked, this, &MainWindow::removeSyncRule);
@@ -753,37 +767,12 @@ void MainWindow::setupUi()
     });
     connect(m_releaseDirEdit, &QComboBox::editTextChanged, this, &MainWindow::updateRulePreview);
     connect(m_hostPathEdit, &QLineEdit::textChanged, this, &MainWindow::updateRulePreview);
-    connect(m_checkUpdatesOnStartupCheck, &QCheckBox::toggled, this, [this](bool) {
-        saveConfiguration();
-    });
-    connect(m_silentUpdateCheck, &QCheckBox::toggled, this, [this](bool enabled) {
-        saveConfiguration();
-        if (enabled) {
-            m_silentInstallFailedVersion.clear();
-            if (!m_availableUpdateVersion.isEmpty() && !isReadyInstallerCurrent()) {
-                startInstallerDownload(false);
-            }
-        } else if (m_installerReply != nullptr && !m_installerDownloadInteractive) {
-            abortInstallerDownload();
-        }
-    });
-
-    m_updatePulse = new QVariantAnimation(this);
-    m_updatePulse->setDuration(2400);
-    m_updatePulse->setStartValue(QColor("#e8f3ff"));
-    m_updatePulse->setKeyValueAt(0.5, QColor("#96c9ff"));
-    m_updatePulse->setEndValue(QColor("#e8f3ff"));
-    m_updatePulse->setLoopCount(-1);
-    connect(m_updatePulse, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) {
-        m_checkUpdatesButton->setStyleSheet(QString::fromLatin1(kUpdateButtonStyle).arg(value.value<QColor>().name()));
-    });
-    updateCheckButton();
+    updateUpdateIndicators();
 
     connect(m_ui->browseButton, &QPushButton::clicked, this, &MainWindow::browseReleaseDir);
     connect(m_ui->addTypeButton, &QPushButton::clicked, this, &MainWindow::addFileType);
     connect(m_ui->removeTypeButton, &QPushButton::clicked, this, &MainWindow::removeSelectedFileType);
     connect(m_typeList, &QListWidget::itemChanged, this, &MainWindow::handleTypeItemChanged);
-    connect(m_ui->saveConfigButton, &QPushButton::clicked, this, &MainWindow::saveConfiguration);
     connect(m_ui->refreshButton, &QPushButton::clicked, this, [this]() {
         m_backgroundTasksPaused = false;
         startOperations(false);
@@ -799,27 +788,101 @@ void MainWindow::setupUi()
     connect(m_hostTable, &QTableWidget::cellDoubleClicked, this, &MainWindow::handleHostTableCellDoubleClicked);
     connect(m_hostTable, &QTableWidget::customContextMenuRequested, this, &MainWindow::showHostTableContextMenu);
     connect(m_hostTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::loadSelectedHostToEditor);
-    connect(m_intervalSpin,
-            static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged),
-            this,
-            [this](int) {
-        updateTimerInterval();
-        saveConfiguration();
-    });
-    connect(m_autoSyncCheck, &QCheckBox::toggled, this, [this](bool enabled) {
-        if (enabled) {
-            m_backgroundTasksPaused = false;
-        }
-        saveConfiguration();
-        if (enabled) {
-            requestAutoSync("已开启自动同步");
-        }
-    });
-    connect(m_startWithSystemCheck, &QCheckBox::toggled, this, [this](bool) {
-        saveConfiguration();
-    });
     connect(m_releaseDirEdit->lineEdit(), &QLineEdit::editingFinished, this, &MainWindow::onReleaseDirEditFinished);
     connect(m_releaseDirEdit, QOverload<int>::of(&QComboBox::activated), this, &MainWindow::onReleaseDirEditFinished);
+}
+
+void MainWindow::showPreferences()
+{
+    if (m_isClosing) return;
+    if (m_preferencesDialog != nullptr) {
+        m_preferencesDialog->raise();
+        m_preferencesDialog->activateWindow();
+        return;
+    }
+    QDialog dialog(this);
+    Ui::PreferencesDialog ui;
+    ui.setupUi(&dialog);
+    ui.buttonBox->button(QDialogButtonBox::Save)->setText("保存");
+    ui.buttonBox->button(QDialogButtonBox::Cancel)->setText("取消");
+    m_preferencesDialog = &dialog;
+    ui.autoSyncCheck->setChecked(m_config.autoSync);
+    ui.startWithSystemCheck->setChecked(m_config.startWithSystem);
+    ui.intervalSpin->setValue(m_config.scanIntervalSeconds);
+    ui.checkUpdatesOnStartupCheck->setChecked(m_config.checkUpdatesOnStartup);
+    ui.silentUpdateCheck->setChecked(m_config.silentUpdate);
+    connect(ui.buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(ui.buttonBox, &QDialogButtonBox::accepted, &dialog, [&]() {
+        AppConfig preferences = m_config;
+        preferences.autoSync = ui.autoSyncCheck->isChecked();
+        preferences.startWithSystem = ui.startWithSystemCheck->isChecked();
+        preferences.scanIntervalSeconds = ui.intervalSpin->value();
+        preferences.checkUpdatesOnStartup = ui.checkUpdatesOnStartupCheck->isChecked();
+        preferences.silentUpdate = ui.silentUpdateCheck->isChecked();
+        QString error;
+        if (!applyPreferences(preferences, &error)) {
+            ui.errorLabel->setText(error);
+            ui.errorLabel->show();
+            return;
+        }
+        dialog.accept();
+    });
+    dialog.exec();
+    m_preferencesDialog.clear();
+}
+
+bool MainWindow::applyPreferences(const AppConfig &preferences, QString *errorMessage)
+{
+    if (m_isClosing) return false;
+    collectUiToConfig();
+    // Keep current host records: a copy can finish while the dialog is open.
+    AppConfig next = m_config;
+    next.autoSync = preferences.autoSync;
+    next.startWithSystem = preferences.startWithSystem;
+    next.scanIntervalSeconds = qBound(1, preferences.scanIntervalSeconds, 3600);
+    next.checkUpdatesOnStartup = preferences.checkUpdatesOnStartup;
+    next.silentUpdate = preferences.silentUpdate;
+
+    const bool previousStartup = m_manageSystemStartup && isSystemAutoStartEnabled();
+    const bool startupChanged = m_manageSystemStartup && previousStartup != next.startWithSystem;
+    if (startupChanged && !setSystemAutoStartEnabled(next.startWithSystem, errorMessage)) return false;
+    if (!ConfigManager::save(m_configPath, next, errorMessage)) {
+        if (startupChanged) {
+            QString rollbackError;
+            if (!setSystemAutoStartEnabled(previousStartup, &rollbackError) && errorMessage != nullptr)
+                *errorMessage += QString("\n恢复开机自启设置失败：%1").arg(rollbackError);
+        }
+        return false;
+    }
+    const bool enableAutoSync = !m_config.autoSync && next.autoSync;
+    const bool silentUpdateChanged = m_config.silentUpdate != next.silentUpdate;
+    m_config = std::move(next);
+    updateTimerInterval();
+    updateSettingsSummary();
+    statusBar()->showMessage("设置已保存", 3000);
+    if (silentUpdateChanged) {
+        if (m_config.silentUpdate) {
+            m_silentInstallFailedVersion.clear();
+            if (!m_availableUpdateVersion.isEmpty() && !isReadyInstallerCurrent()) startInstallerDownload(false);
+        } else if (m_installerReply != nullptr && !m_installerDownloadInteractive) {
+            abortInstallerDownload();
+        }
+    }
+    if (enableAutoSync) {
+        m_backgroundTasksPaused = false;
+        requestAutoSync("已开启自动同步");
+    }
+    return true;
+}
+
+void MainWindow::updateSettingsSummary()
+{
+    QSignalBlocker blocker(m_ui->autoSyncAction);
+    m_ui->autoSyncAction->setChecked(m_config.autoSync);
+    const QString summary = QString("自动同步：%1 · 扫描间隔：%2 秒")
+        .arg(m_config.autoSync ? "开启" : "关闭").arg(m_config.scanIntervalSeconds);
+    m_ui->settingsSummaryLabel->setText(
+        QString("<a href=\"preferences\" style=\"color: #52606d; text-decoration: none;\">%1</a>").arg(summary));
 }
 
 void MainWindow::refreshRuleTable()
@@ -1019,7 +1082,7 @@ void MainWindow::startUpdateCheck(bool interactive)
     }
     m_updateCheckInProgress = true;
     m_updateCheckInteractive = interactive;
-    updateCheckButton();
+    updateUpdateIndicators();
     if (!QSslSocket::supportsSsl()) {
         finishUpdateCheck("当前发布包缺少 HTTPS 支持，请补齐与 Qt 配套的 TLS 运行库。");
         return;
@@ -1166,11 +1229,11 @@ void MainWindow::finishUpdateCheck(const QString &errorMessage)
     const bool interactive = m_updateCheckInteractive;
     m_updateCheckInProgress = false;
     m_updateCheckInteractive = false;
-    updateCheckButton();
+    updateUpdateIndicators();
     if (m_isClosing) {
         return;
     }
-    if (errorMessage.isEmpty() && !m_availableUpdateVersion.isEmpty() && m_silentUpdateCheck->isChecked()
+    if (errorMessage.isEmpty() && !m_availableUpdateVersion.isEmpty() && m_config.silentUpdate
         && !isReadyInstallerCurrent() && m_installerDownloadVersion != m_availableUpdateVersion) {
         startInstallerDownload(false);
     }
@@ -1198,7 +1261,7 @@ void MainWindow::showAvailableUpdate()
     const QUrl historyUrl = m_availableUpdateUrl;
     const QUrl releaseUrl = m_availableReleaseUrl.isValid() ? m_availableReleaseUrl : m_availableUpdateUrl;
     m_updateDialogOpen = true;
-    updateCheckButton();
+    updateUpdateIndicators();
 
     QDialog dialog(this);
     Ui::UpdateDialog ui;
@@ -1297,12 +1360,12 @@ void MainWindow::showAvailableUpdate()
     if (result != kInstallDialogResult) {
         m_installAfterDownload = false;
         // 用户取消时停止由对话框发起的下载；开启无感更新时保留后台下载。
-        if (m_installerReply != nullptr && m_installerDownloadInteractive && !m_silentUpdateCheck->isChecked()) {
+        if (m_installerReply != nullptr && m_installerDownloadInteractive && !m_config.silentUpdate) {
             abortInstallerDownload();
         }
         m_installerDownloadInteractive = false;
     }
-    updateCheckButton();
+    updateUpdateIndicators();
     if (!m_isClosing && result == kInstallDialogResult) {
         installUpdateNow();
     }
@@ -1599,7 +1662,7 @@ void MainWindow::finishInstallerDownload()
             m_updateDialogInstallButton->setText("更新");
         }
     }
-    if (m_silentUpdateCheck->isChecked()) {
+    if (m_config.silentUpdate) {
         statusBar()->showMessage(QString("新版本 %1 已下载，将在没有同步任务时自动安装。").arg(m_readyInstallerVersion), 8000);
         QTimer::singleShot(0, this, [this]() {
             installSilentUpdateIfIdle();
@@ -1667,7 +1730,7 @@ void MainWindow::installUpdateNow()
 
 bool MainWindow::installSilentUpdateIfIdle()
 {
-    if (m_isClosing || m_isInstallingUpdate || !m_silentUpdateCheck->isChecked() || !isReadyInstallerCurrent()
+    if (m_isClosing || m_isInstallingUpdate || !m_config.silentUpdate || !isReadyInstallerCurrent()
         || m_silentInstallFailedVersion == m_readyInstallerVersion || m_updateDialogOpen
         || hasRunningWorkers() || m_pendingSyncAfterCurrentRun || (isVisible() && isActiveWindow())
         || QApplication::activeModalWidget() != nullptr || QApplication::activePopupWidget() != nullptr) {
@@ -1685,45 +1748,26 @@ bool MainWindow::installSilentUpdateIfIdle()
     return true;
 }
 
-void MainWindow::updateCheckButton()
+void MainWindow::updateUpdateIndicators()
 {
-    if (m_checkUpdatesButton == nullptr || m_updatePulse == nullptr) {
-        return;
-    }
     const bool hasUpdate = !m_availableUpdateVersion.isEmpty();
-    m_checkUpdatesButton->setEnabled(!m_isClosing && (!m_updateCheckInProgress || hasUpdate));
-    m_checkUpdatesButton->setText(hasUpdate ? "发现新版本" : (m_updateCheckInProgress ? "正在检查..." : "检查更新"));
-    m_checkUpdatesButton->setToolTip(hasUpdate
+    m_ui->checkUpdatesAction->setEnabled(!m_isClosing && (!m_updateCheckInProgress || hasUpdate));
+    m_ui->checkUpdatesAction->setText(hasUpdate
+        ? QString("发现新版本 %1...").arg(m_availableUpdateVersion)
+        : (m_updateCheckInProgress ? QString("正在检查更新...") : QString("检查更新...")));
+    m_ui->checkUpdatesAction->setToolTip(hasUpdate
         ? QString("发现版本 %1，点击查看更新说明并选择是否更新。").arg(m_availableUpdateVersion)
         : QString("手动检查软件更新；程序每 2 小时自动检查一次。"));
-
-    const bool dismissed = !m_dismissedUpdateVersion.isEmpty()
-        && QVersionNumber::compare(QVersionNumber::fromString(m_availableUpdateVersion),
-                                   QVersionNumber::fromString(m_dismissedUpdateVersion)) <= 0;
-    if (!hasUpdate || dismissed || m_isClosing || m_updateDialogOpen) {
-        m_updatePulse->stop();
-        m_checkUpdatesButton->setStyleSheet(hasUpdate
-            ? QString::fromLatin1(kUpdateButtonStyle).arg("#e8f3ff") : QString());
-        return;
-    }
-    if (isVisible() && !isMinimized()) {
-        if (m_updatePulse->state() == QAbstractAnimation::Paused) {
-            m_updatePulse->resume();
-        } else if (m_updatePulse->state() == QAbstractAnimation::Stopped) {
-            m_updatePulse->start();
-        }
-    } else if (m_updatePulse->state() == QAbstractAnimation::Running) {
-        m_updatePulse->pause();
-    }
+    m_ui->updateNoticeLabel->setVisible(hasUpdate && !m_isClosing);
+    m_ui->updateNoticeLabel->setText(hasUpdate
+        ? QString("<a href=\"update\">发现新版本 %1</a>").arg(m_availableUpdateVersion.toHtmlEscaped()) : QString());
+    m_ui->updateNoticeLabel->setToolTip(m_ui->checkUpdatesAction->toolTip());
 }
 
 void MainWindow::stopUpdateChecks()
 {
     if (m_updateCheckTimer != nullptr) {
         m_updateCheckTimer->stop();
-    }
-    if (m_updatePulse != nullptr) {
-        m_updatePulse->stop();
     }
     m_updateCheckInProgress = false;
     m_updateCheckInteractive = false;
@@ -1801,26 +1845,7 @@ void MainWindow::applyConfigToUi()
         m_releaseDirEdit->setCurrentText(normalizePathForUi(m_config.releaseDir));
     }
 
-    {
-        QSignalBlocker blocker(m_autoSyncCheck);
-        m_autoSyncCheck->setChecked(m_config.autoSync);
-    }
-    {
-        QSignalBlocker blocker(m_startWithSystemCheck);
-        m_startWithSystemCheck->setChecked(m_config.startWithSystem);
-    }
-    {
-        QSignalBlocker blocker(m_checkUpdatesOnStartupCheck);
-        m_checkUpdatesOnStartupCheck->setChecked(m_config.checkUpdatesOnStartup);
-    }
-    {
-        QSignalBlocker blocker(m_silentUpdateCheck);
-        m_silentUpdateCheck->setChecked(m_config.silentUpdate);
-    }
-    {
-        QSignalBlocker blocker(m_intervalSpin);
-        m_intervalSpin->setValue(qMax(1, m_config.scanIntervalSeconds));
-    }
+    updateSettingsSummary();
 
     if (m_config.fileTypes.isEmpty()) {
         m_config.fileTypes = QStringList() << "dll" << "exe" << "pdb";
@@ -1841,11 +1866,6 @@ void MainWindow::collectUiToConfig()
     previousTypes.sort();
 
     m_config.releaseDir = normalizePathForUi(m_releaseDirEdit->currentText());
-    m_config.autoSync = m_autoSyncCheck->isChecked();
-    m_config.startWithSystem = m_startWithSystemCheck->isChecked();
-    m_config.checkUpdatesOnStartup = m_checkUpdatesOnStartupCheck->isChecked();
-    m_config.silentUpdate = m_silentUpdateCheck->isChecked();
-    m_config.scanIntervalSeconds = m_intervalSpin->value();
 
     QStringList types;
     QStringList allTypes;
@@ -2136,10 +2156,8 @@ void MainWindow::stopAllOperations()
     m_backgroundTasksPaused = true;
     m_pendingSyncAfterCurrentRun = false;
     m_pendingSyncStatusMessage.clear();
-    {
-        QSignalBlocker blocker(m_autoSyncCheck);
-        m_autoSyncCheck->setChecked(false);
-    }
+    m_config.autoSync = false;
+    updateSettingsSummary();
     requestWorkersToStop();
     saveConfiguration();
     statusBar()->showMessage(hasRunningWorkers() ? "正在停止所有后台任务..." : "已停止，自动同步已关闭");
@@ -2362,6 +2380,7 @@ void MainWindow::handleWorkerCopySucceeded(const QString &hostId, const QDateTim
         if (host.id == hostId) {
             host.lastSyncUtc = completedUtc.toUTC();
             refreshLastSyncTimes();
+            m_syncCompletionToast->enqueue(hostDisplayText(host));
             QString error;
             if (!ConfigManager::save(m_configPath, m_config, &error)) {
                 QMessageBox::warning(this, "同步时间保存失败", QString("文件同步已完成，但同步时间无法写入配置：%1").arg(error));
@@ -2392,7 +2411,7 @@ void MainWindow::pollForChanges()
     const QString fingerprint = currentLocalFingerprint();
     if (m_lastFingerprint.isEmpty()) {
         m_lastFingerprint = fingerprint;
-        startOperations(m_autoSyncCheck->isChecked());
+        startOperations(m_config.autoSync);
         return;
     }
 
@@ -2403,14 +2422,14 @@ void MainWindow::pollForChanges()
     }
     if (changed) {
         m_lastFingerprint = fingerprint;
-        if (m_autoSyncCheck->isChecked()) {
+        if (m_config.autoSync) {
             statusBar()->showMessage("检测到本地文件变化，开始自动同步", 3000);
             startOperations(true);
             return;
         }
     }
 
-    startOperations(m_autoSyncCheck->isChecked());
+    startOperations(m_config.autoSync);
 }
 
 void MainWindow::updateHostRow(int row,
@@ -2507,7 +2526,7 @@ QString MainWindow::normalizedExtension(const QString &value) const
 
 void MainWindow::requestAutoSync(const QString &statusMessage)
 {
-    if (m_isClosing || !m_autoSyncCheck->isChecked()) {
+    if (m_isClosing || !m_config.autoSync) {
         return;
     }
 
@@ -2638,7 +2657,7 @@ bool MainWindow::hasRunningWorkers() const
 void MainWindow::updateTimerInterval()
 {
     if (m_pollTimer != nullptr) {
-        m_pollTimer->setInterval(qMax(1, m_intervalSpin->value()) * 1000);
+        m_pollTimer->setInterval(qMax(1, m_config.scanIntervalSeconds) * 1000);
     }
 }
 

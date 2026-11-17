@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(RemoteReleaseSync VERSION 1.0.8 LANGUAGES CXX)
+project(RemoteReleaseSync VERSION 1.0.9 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,9 +18,13 @@ add_executable(RemoteReleaseSync
     src/main.cpp
     src/mainwindow.cpp
     src/mainwindow.h
+    src/synccompletiontoast.cpp
+    src/synccompletiontoast.h
+    src/synccompletiontoast.ui
     src/syncplan.cpp
     src/syncplan.h
     src/mainwindow.ui
+    src/preferencesdialog.ui
     src/syncruledialog.ui
     src/usagetipsdialog.ui
     src/recentcopypreview.ui
@@ -53,7 +57,8 @@ if (SYNC_BUILD_TESTS)
         src/syncplan.cpp src/syncplan.h
         src/syncworker.cpp src/syncworker.h
         src/mainwindow.cpp src/mainwindow.h
-        src/mainwindow.ui src/syncruledialog.ui src/usagetipsdialog.ui
+        src/synccompletiontoast.cpp src/synccompletiontoast.h src/synccompletiontoast.ui
+        src/mainwindow.ui src/preferencesdialog.ui src/syncruledialog.ui src/usagetipsdialog.ui
         src/recentcopypreview.ui src/updatedialog.ui
         resources/app.qrc)
     target_include_directories(SyncToolTests PRIVATE src)
