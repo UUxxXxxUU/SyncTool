@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSaveFile>
 #include <QUuid>
 
 namespace
@@ -51,6 +52,10 @@ AppConfig ConfigManager::load(const QString &filePath)
     config.checkUpdatesOnStartup = root.value("checkUpdatesOnStartup").toBool(false);
     config.silentUpdate = root.value("silentUpdate").toBool(false);
     config.scanIntervalSeconds = qMax(1, root.value("scanIntervalSeconds").toInt(5));
+    config.logRetentionDays = qBound(0, root.value("logRetentionDays").toInt(30), 365);
+    for (const QJsonValue &entry : root.value("excludedFilePatterns").toArray()) {
+        if (entry.isString()) config.excludedFilePatterns.append(entry.toString());
+    }
 
     const QJsonArray historyArray = root.value("releaseDirHistory").toArray();
     for (const QJsonValue &value : historyArray) {
@@ -138,6 +143,8 @@ bool ConfigManager::save(const QString &filePath, const AppConfig &config, QStri
     root.insert("checkUpdatesOnStartup", config.checkUpdatesOnStartup);
     root.insert("silentUpdate", config.silentUpdate);
     root.insert("scanIntervalSeconds", qMax(1, config.scanIntervalSeconds));
+    root.insert("logRetentionDays", qBound(0, config.logRetentionDays, 365));
+    root.insert("excludedFilePatterns", QJsonArray::fromStringList(config.excludedFilePatterns));
 
     QJsonArray historyArray;
     for (const QString &path : config.releaseDirHistory) {
@@ -198,14 +205,14 @@ bool ConfigManager::save(const QString &filePath, const AppConfig &config, QStri
     }
     root.insert("hosts", hostsArray);
 
-    QFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    QSaveFile file(filePath);
+    const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
         if (errorMessage != nullptr) {
             *errorMessage = file.errorString();
         }
         return false;
     }
 
-    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     return true;
 }

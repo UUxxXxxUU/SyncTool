@@ -2,6 +2,8 @@
 #include "mainwindow.h"
 
 #include "configmanager.h"
+#include "diagnostics.h"
+#include "remotedebugger.h"
 #include "syncworker.h"
 #include "synccompletiontoast.h"
 #include "syncplan.h"
@@ -79,6 +81,7 @@
 #include <QThread>
 #include <QTextOption>
 #include <QTimer>
+#include <QToolButton>
 #include <QToolButton>
 #include <QToolTip>
 #include <QUrl>
@@ -488,6 +491,7 @@ MainWindow::MainWindow(QWidget *parent, const QString &configPath, bool manageSy
     , m_configPath(configPath.isEmpty() ? ConfigManager::defaultConfigPath() : configPath)
     , m_manageSystemStartup(manageSystemStartup)
 {
+    m_uptime.start();
     setupUi();
     m_syncCompletionToast = std::make_unique<SyncCompletionToast>(this);
     m_copyPreview = new RecentCopyPreview(this);
@@ -514,7 +518,13 @@ MainWindow::MainWindow(QWidget *parent, const QString &configPath, bool manageSy
 
     auto *lastSyncTimer = new QTimer(this);
     connect(lastSyncTimer, &QTimer::timeout, this, &MainWindow::refreshLastSyncTimes);
+    connect(lastSyncTimer, &QTimer::timeout, this, &MainWindow::updateUptime);
     lastSyncTimer->start(1000);
+    updateUptime();
+    Diagnostics::maintain(m_config.logRetentionDays);
+    auto *retentionTimer = new QTimer(this);
+    connect(retentionTimer, &QTimer::timeout, this, [this]() { Diagnostics::maintain(m_config.logRetentionDays); });
+    retentionTimer->start(60 * 60 * 1000);
 
     statusBar()->showMessage(QString("配置文件：%1").arg(QDir::toNativeSeparators(m_configPath)), 5000);
     QTimer::singleShot(300, this, [this]() {
@@ -582,6 +592,9 @@ MainWindow::~MainWindow()
 bool MainWindow::event(QEvent *event)
 {
     const bool handled = QMainWindow::event(event);
+    if (event->type() == QEvent::WindowDeactivate || event->type() == QEvent::Hide) {
+        if (m_hostPasswordEdit) m_ui->showPasswordButton->setChecked(false);
+    }
     if (event->type() == QEvent::Show || event->type() == QEvent::Hide
         || event->type() == QEvent::WindowStateChange) {
         updateUpdateIndicators();
@@ -721,6 +734,10 @@ void MainWindow::setupUi()
     m_hostPathEdit = m_ui->hostPathEdit;
     m_hostUserEdit = m_ui->hostUserEdit;
     m_hostPasswordEdit = m_ui->hostPasswordEdit;
+    connect(m_ui->showPasswordButton, &QToolButton::toggled, this, [this](bool visible) {
+        m_hostPasswordEdit->setEchoMode(visible ? QLineEdit::Normal : QLineEdit::Password);
+        m_ui->showPasswordButton->setText(visible ? "隐藏密码" : "显示密码");
+    });
     m_hostTable = m_ui->hostTable;
     m_releaseDirEdit->lineEdit()->setPlaceholderText("选择或输入本地 Release 目录路径...");
     m_ui->stopButton->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
@@ -740,6 +757,13 @@ void MainWindow::setupUi()
     connect(m_ui->preferencesAction, &QAction::triggered, this, &MainWindow::showPreferences);
     connect(m_ui->checkUpdatesAction, &QAction::triggered, this, &MainWindow::checkForUpdates);
     connect(m_ui->saveConfigAction, &QAction::triggered, this, &MainWindow::saveConfiguration);
+    connect(m_ui->remoteDebuggerAction, &QAction::triggered, this, &MainWindow::showRemoteDebugger);
+    connect(m_ui->diagnosticsAction, &QAction::triggered, this, [this]() {
+        const QString path = Diagnostics::directory();
+        if (!QDir().mkpath(path) || !QDesktopServices::openUrl(QUrl::fromLocalFile(path))) {
+            showNotice("诊断目录", "无法打开诊断目录：" + QDir::toNativeSeparators(path), true);
+        }
+    });
     connect(m_ui->settingsSummaryLabel, &QLabel::linkActivated, this, [this]() { showPreferences(); });
     connect(m_ui->updateNoticeLabel, &QLabel::linkActivated, this, [this]() { checkForUpdates(); });
     connect(m_ui->autoSyncAction, &QAction::toggled, this, [this](bool enabled) {
@@ -772,6 +796,19 @@ void MainWindow::setupUi()
     connect(m_ui->browseButton, &QPushButton::clicked, this, &MainWindow::browseReleaseDir);
     connect(m_ui->addTypeButton, &QPushButton::clicked, this, &MainWindow::addFileType);
     connect(m_ui->removeTypeButton, &QPushButton::clicked, this, &MainWindow::removeSelectedFileType);
+    connect(m_ui->invertTypeButton, &QPushButton::clicked, this, [this]() {
+        if (!m_typeList->count() || m_isClosing) return;
+        {
+            const QSignalBlocker blocker(m_typeList);
+            for (int index = 0; index < m_typeList->count(); ++index) {
+                auto *item = m_typeList->item(index);
+                item->setCheckState(item->checkState() == Qt::Checked ? Qt::Unchecked : Qt::Checked);
+            }
+        }
+        handleTypeItemChanged(nullptr);
+    });
+    connect(m_ui->applyExclusionsButton, &QPushButton::clicked, this, &MainWindow::saveExclusions);
+    connect(m_ui->exclusionsEdit, &QPlainTextEdit::textChanged, m_ui->exclusionsError, &QLabel::hide);
     connect(m_typeList, &QListWidget::itemChanged, this, &MainWindow::handleTypeItemChanged);
     connect(m_ui->refreshButton, &QPushButton::clicked, this, [this]() {
         m_backgroundTasksPaused = false;
@@ -790,6 +827,81 @@ void MainWindow::setupUi()
     connect(m_hostTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::loadSelectedHostToEditor);
     connect(m_releaseDirEdit->lineEdit(), &QLineEdit::editingFinished, this, &MainWindow::onReleaseDirEditFinished);
     connect(m_releaseDirEdit, QOverload<int>::of(&QComboBox::activated), this, &MainWindow::onReleaseDirEditFinished);
+}
+
+void MainWindow::showRemoteDebugger()
+{
+    if (m_isClosing) return;
+    if (!m_remoteDebugger) {
+        m_remoteDebugger = new RemoteDebugger(this);
+        connect(m_remoteDebugger, &RemoteDebugger::downloadFinished, this, [this](const QString &path, const QString &error) {
+            if (error.isEmpty()) showNotice("远程调试器下载完成", QString("安装包已保存到“下载”：\n%1").arg(path), false);
+            else showNotice("远程调试器下载失败", error, true);
+        });
+    }
+    m_remoteDebugger->show();
+    m_remoteDebugger->raise();
+    m_remoteDebugger->activateWindow();
+}
+
+void MainWindow::showNotice(const QString &title, const QString &message, bool warning, const QString &details)
+{
+    if (m_isClosing) return;
+    if ((!isVisible() || isMinimized()) && m_trayIcon && QSystemTrayIcon::supportsMessages()) {
+        m_trayIcon->showMessage(title, message, warning ? QSystemTrayIcon::Warning : QSystemTrayIcon::Information, 12000);
+        statusBar()->showMessage(title + " · " + message.section('\n', 0, 0), 12000);
+        return;
+    }
+
+    QWidget *parent = m_remoteDebugger && m_remoteDebugger->isActiveWindow()
+        ? static_cast<QWidget *>(m_remoteDebugger) : this;
+    auto *notice = new QMessageBox(warning ? QMessageBox::Warning : QMessageBox::Information,
+                                   title, message, QMessageBox::Ok, parent);
+    notice->setTextFormat(Qt::PlainText);
+    if (!details.isEmpty()) notice->setDetailedText(details);
+    notice->setAttribute(Qt::WA_DeleteOnClose);
+    notice->setModal(false);
+    notice->show();
+}
+
+void MainWindow::updateUptime()
+{
+    const qint64 seconds = m_uptime.elapsed() / 1000;
+    const QString clock = QString("%1:%2:%3")
+        .arg(seconds / 3600 % 24, 2, 10, QLatin1Char('0'))
+        .arg(seconds / 60 % 60, 2, 10, QLatin1Char('0'))
+        .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+    const qint64 days = seconds / (24 * 3600);
+    m_ui->uptimeLabel->setText(days > 0 ? QString("运行 %1 天 %2").arg(days).arg(clock) : "运行 " + clock);
+}
+
+void MainWindow::saveExclusions()
+{
+    if (m_isClosing) return;
+    QString error;
+    QStringList patterns;
+    const auto entries = m_ui->exclusionsEdit->toPlainText().split(QRegularExpression("[;；\\n]"), QString::SkipEmptyParts);
+    if (SyncPlan::normalizeExclusions(entries, &patterns, &error)) {
+        collectUiToConfig();
+        if (patterns == m_config.excludedFilePatterns) return;
+        AppConfig next = m_config;
+        next.excludedFilePatterns = patterns;
+        for (HostEntry &host : next.hosts) host.lastSyncUtc = QDateTime();
+        if (ConfigManager::save(m_configPath, next, &error)) {
+            m_config = std::move(next);
+            m_symbolWarnings.clear();
+            for (const HostEntry &host : m_config.hosts) ++m_syncContextRevisions[host.id];
+            refreshLastSyncTimes();
+            m_ui->exclusionsEdit->setPlainText(patterns.join('\n'));
+            m_lastFingerprint.clear();
+            Diagnostics::record("config.exclusions_saved", QString("count=%1").arg(patterns.size()));
+            statusBar()->showMessage("排除规则已保存", 3000);
+            requestAutoSync("排除规则已更新，开始自动同步");
+            return;
+        }
+    }
+    m_ui->exclusionsError->setText(error);
+    m_ui->exclusionsError->show();
 }
 
 void MainWindow::showPreferences()
@@ -811,6 +923,7 @@ void MainWindow::showPreferences()
     ui.intervalSpin->setValue(m_config.scanIntervalSeconds);
     ui.checkUpdatesOnStartupCheck->setChecked(m_config.checkUpdatesOnStartup);
     ui.silentUpdateCheck->setChecked(m_config.silentUpdate);
+    ui.logRetentionSpin->setValue(m_config.logRetentionDays);
     connect(ui.buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(ui.buttonBox, &QDialogButtonBox::accepted, &dialog, [&]() {
         AppConfig preferences = m_config;
@@ -819,6 +932,7 @@ void MainWindow::showPreferences()
         preferences.scanIntervalSeconds = ui.intervalSpin->value();
         preferences.checkUpdatesOnStartup = ui.checkUpdatesOnStartupCheck->isChecked();
         preferences.silentUpdate = ui.silentUpdateCheck->isChecked();
+        preferences.logRetentionDays = ui.logRetentionSpin->value();
         QString error;
         if (!applyPreferences(preferences, &error)) {
             ui.errorLabel->setText(error);
@@ -842,6 +956,7 @@ bool MainWindow::applyPreferences(const AppConfig &preferences, QString *errorMe
     next.scanIntervalSeconds = qBound(1, preferences.scanIntervalSeconds, 3600);
     next.checkUpdatesOnStartup = preferences.checkUpdatesOnStartup;
     next.silentUpdate = preferences.silentUpdate;
+    next.logRetentionDays = qBound(0, preferences.logRetentionDays, 365);
 
     const bool previousStartup = m_manageSystemStartup && isSystemAutoStartEnabled();
     const bool startupChanged = m_manageSystemStartup && previousStartup != next.startWithSystem;
@@ -857,6 +972,9 @@ bool MainWindow::applyPreferences(const AppConfig &preferences, QString *errorMe
     const bool enableAutoSync = !m_config.autoSync && next.autoSync;
     const bool silentUpdateChanged = m_config.silentUpdate != next.silentUpdate;
     m_config = std::move(next);
+    Diagnostics::record("config.preferences_saved", QString("auto=%1 interval=%2 retention_days=%3")
+                        .arg(m_config.autoSync).arg(m_config.scanIntervalSeconds).arg(m_config.logRetentionDays));
+    Diagnostics::maintain(m_config.logRetentionDays);
     updateTimerInterval();
     updateSettingsSummary();
     statusBar()->showMessage("设置已保存", 3000);
@@ -905,7 +1023,7 @@ void MainWindow::refreshRuleTable()
         m_ui->ruleTable->setItem(row, 2, types);
     }
     if (!m_config.syncRules.isEmpty()) m_ui->ruleTable->selectRow(qBound(0, selectedRow, m_config.syncRules.size() - 1));
-    m_ui->syncTabs->setTabText(1, QString("附加同步规则（%1）").arg(m_config.syncRules.size()));
+    m_ui->syncTabs->setTabText(m_ui->syncTabs->indexOf(m_ui->rulesTab), QString("附加同步规则（%1）").arg(m_config.syncRules.size()));
     updateRulePreview();
 }
 
@@ -937,6 +1055,7 @@ void MainWindow::syncRulesChanged()
         host.lastSyncUtc = QDateTime();
         ++m_syncContextRevisions[host.id];
     }
+    m_symbolWarnings.clear();
     refreshLastSyncTimes();
     refreshRuleTable();
     saveConfiguration();
@@ -1835,6 +1954,7 @@ void MainWindow::loadConfiguration()
 
 void MainWindow::applyConfigToUi()
 {
+    m_ui->exclusionsEdit->setPlainText(m_config.excludedFilePatterns.join('\n'));
     // 先填充历史记录到下拉框
     {
         QSignalBlocker blocker(m_releaseDirEdit);
@@ -1891,6 +2011,7 @@ void MainWindow::collectUiToConfig()
             host.lastSyncUtc = QDateTime();
             ++m_syncContextRevisions[host.id];
         }
+        m_symbolWarnings.clear();
         refreshLastSyncTimes();
     }
 }
@@ -2091,6 +2212,7 @@ void MainWindow::removeSelectedHost()
 
 void MainWindow::clearHostEditor()
 {
+    m_ui->showPasswordButton->setChecked(false);
     m_hostEnabledCheck->setChecked(true);
     m_hostNameEdit->clear();
     m_hostPathEdit->clear();
@@ -2102,6 +2224,7 @@ void MainWindow::clearHostEditor()
 void MainWindow::loadSelectedHostToEditor()
 {
     if (m_isClosing) return;
+    m_ui->showPasswordButton->setChecked(false);
     const int row = m_hostTable->currentRow();
     if (row < 0 || row >= m_config.hosts.size()) {
         return;
@@ -2121,6 +2244,7 @@ void MainWindow::saveConfiguration()
 
     QString error;
     if (!ConfigManager::save(m_configPath, m_config, &error)) {
+        Diagnostics::record("config.write_failed", {}, true);
         QMessageBox::warning(this, "保存失败", QString("配置文件写入失败：%1").arg(error));
         return;
     }
@@ -2130,6 +2254,8 @@ void MainWindow::saveConfiguration()
     }
 
     statusBar()->showMessage("配置已保存", 3000);
+    Diagnostics::record("config.saved", QString("hosts=%1 types=%2 rules=%3")
+                        .arg(m_config.hosts.size()).arg(m_config.selectedFileTypes.size()).arg(m_config.syncRules.size()));
 }
 
 void MainWindow::syncNow()
@@ -2367,6 +2493,28 @@ void MainWindow::handleWorkerState(const QString &hostId,
     }
 }
 
+void MainWindow::handleSymbolsVerified(const QString &hostId, const QStringList &files, bool verified, quint64 revision)
+{
+    if (m_isClosing || m_stoppingHostIds.contains(hostId) || m_syncContextRevisions.value(hostId) != revision) return;
+    if (files.isEmpty()) {
+        if (verified) m_symbolWarnings.remove(hostId);
+        return;
+    }
+    const auto host = std::find_if(m_config.hosts.cbegin(), m_config.hosts.cend(),
+                                   [&](const HostEntry &entry) { return entry.id == hostId; });
+    if (host == m_config.hosts.cend() || !host->enabled) return;
+
+    QStringList warningKey = files;
+    warningKey.prepend(verified ? "pending" : "unverified");
+    if (m_symbolWarnings.value(hostId) == warningKey) return;
+    m_symbolWarnings.insert(hostId, warningKey);
+    const QString name = host->name.isEmpty() ? host->sharePath : host->name;
+    const QString message = verified
+        ? QString("主机 %1 有 %2 个计划同步的 PDB 仍缺失或与本地不一致。符号文件被占用或目标共享不可写时，请解除占用或恢复共享后重试。").arg(name).arg(files.size())
+        : QString("主机 %1 的远端校验失败，无法确认 %2 个计划同步的 PDB 已更新。请检查共享后重试。").arg(name).arg(files.size());
+    showNotice("PDB 同步提醒", message, true, files.join('\n'));
+}
+
 void MainWindow::handleWorkerCopySucceeded(const QString &hostId, const QDateTime &completedUtc, quint64 revision)
 {
     if (m_isClosing || !completedUtc.isValid() || m_stoppingHostIds.contains(hostId)) {
@@ -2515,7 +2663,7 @@ QString MainWindow::currentLocalFingerprint() const
         const QListWidgetItem *item = m_typeList->item(index);
         if (item->checkState() == Qt::Checked) selectedTypes.append(normalizedExtension(item->text()));
     }
-    return SyncPlan::fingerprint(m_releaseDirEdit->currentText(), selectedTypes, m_config.syncRules);
+    return SyncPlan::fingerprint(m_releaseDirEdit->currentText(), selectedTypes, m_config.syncRules, m_config.excludedFilePatterns);
 }
 QString MainWindow::normalizedExtension(const QString &value) const
 {
@@ -2588,7 +2736,8 @@ void MainWindow::startOperations(bool performCopy)
         }
 
         auto *thread = new QThread(this);
-        auto *worker = new SyncWorker(host, m_config.releaseDir, selectedTypes, performCopy, m_config.syncRules);
+        auto *worker = new SyncWorker(host, m_config.releaseDir, selectedTypes, performCopy,
+                                      m_config.syncRules, nullptr, m_config.excludedFilePatterns);
         worker->moveToThread(thread);
 
         connect(thread, &QThread::started, worker, &SyncWorker::process);
@@ -2600,6 +2749,9 @@ void MainWindow::startOperations(bool performCopy)
         });
         connect(worker, &SyncWorker::stateChanged, this, &MainWindow::handleWorkerState);
         const quint64 revision = m_syncContextRevisions.value(host.id);
+        connect(worker, &SyncWorker::symbolsVerified, this, [this, revision](const QString &hostId, const QStringList &files, bool verified) {
+            handleSymbolsVerified(hostId, files, verified, revision);
+        });
         connect(worker, &SyncWorker::copySucceeded, this, [this, revision](const QString &hostId, const QDateTime &completedUtc) {
             handleWorkerCopySucceeded(hostId, completedUtc, revision);
         });

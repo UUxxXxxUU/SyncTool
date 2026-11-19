@@ -44,6 +44,7 @@ QT_END_NAMESPACE
 class SyncWorker;
 class RecentCopyPreview;
 class SyncCompletionToast;
+class RemoteDebugger;
 namespace Ui { class MainWindow; }
 
 // 更新说明中的一个分类，例如“修复问题”“新增功能”。
@@ -107,6 +108,11 @@ private:
     bool applyPreferences(const AppConfig &preferences, QString *errorMessage);
     void updateSettingsSummary();
     void showUsageTips();
+    void showRemoteDebugger();
+    void showNotice(const QString &title, const QString &message, bool warning, const QString &details = {});
+    void updateUptime();
+    void saveExclusions();
+    void handleSymbolsVerified(const QString &hostId, const QStringList &files, bool verified, quint64 revision);
     void editSyncRule(bool editExisting);
     void removeSyncRule();
     void refreshRuleTable();
@@ -169,6 +175,7 @@ private:
     QString m_lastFingerprint;
     QString m_lastShareOpenPath;
     QElapsedTimer m_shareOpenClickTimer;
+    QElapsedTimer m_uptime;
     bool m_isOpeningShare = false;
     bool m_isRefreshingTable = false;
     bool m_pendingSyncAfterCurrentRun = false;
@@ -182,6 +189,7 @@ private:
     QLineEdit *m_newTypeEdit = nullptr;
     QPointer<QDialog> m_usageTipsDialog;
     QPointer<QDialog> m_preferencesDialog;
+    RemoteDebugger *m_remoteDebugger = nullptr;
     QNetworkAccessManager *m_updateNetworkManager = nullptr;
     QPointer<QNetworkReply> m_updateReply;
     QTimer *m_updateCheckTimer = nullptr;
@@ -228,6 +236,7 @@ private:
     QHash<QString, std::shared_ptr<std::atomic<bool>>> m_cancellationFlags;
     QSet<QString> m_stoppingHostIds;
     QHash<QString, quint64> m_syncContextRevisions;
+    QHash<QString, QStringList> m_symbolWarnings;
 
     QSystemTrayIcon *m_trayIcon = nullptr;
     QMenu *m_trayMenu = nullptr;

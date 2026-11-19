@@ -6,6 +6,8 @@ param(
     [string]$VisualStudioDir,
     [string]$QtMsBuildDir,
     [string]$InnoSetupDir,
+    [string]$CrashpadSourceDir,
+    [string]$RuntimeNoticesDir,
     [switch]$Upload
 )
 
@@ -224,6 +226,13 @@ $binDir = Join-Path $buildDir 'release'
 $stageDir = Join-Path $runDir $packageName
 New-Item -ItemType Directory -Path $buildDir, $stageDir | Out-Null
 
+$crashpadBuildDir = Join-Path $projectRoot 'artifacts\dependencies\crashpad-build'
+$cmakePath = Join-Path $VisualStudioDir 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+if (!(Test-Path -LiteralPath $cmakePath -PathType Leaf)) {
+    $cmakePath = (Get-Command cmake.exe -CommandType Application -ErrorAction Stop).Source
+}
+& (Join-Path $PSScriptRoot 'build-crashpad.ps1') -CMakePath $cmakePath -BuildDir $crashpadBuildDir -SourceDir $CrashpadSourceDir
+
 # The project fixes moc and object paths under Release; build an isolated source copy with those paths intact.
 $buildProjectPath = Join-Path $buildDir 'RemoteReleaseSync.vcxproj'
 Copy-Item -LiteralPath $projectPath -Destination $buildProjectPath
@@ -258,6 +267,9 @@ foreach ($resourceDir in $resourceDirs) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $destinationDir) -Force | Out-Null
     Copy-Item -LiteralPath $resourceDir -Destination $destinationDir -Recurse
 }
+$vendoredDir = Join-Path $buildDir 'third_party'
+New-Item -ItemType Directory -Path $vendoredDir | Out-Null
+Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party\spdlog') -Destination $vendoredDir -Recurse
 
 $previousPath = $env:PATH
 try {
@@ -275,6 +287,10 @@ try {
     }
     $builtExe = Join-Path $binDir 'RemoteReleaseSync.exe'
     Assert-X64Binary $builtExe
+    $symbolsPath = Join-Path $runDir 'RemoteReleaseSync.pdb'
+    $builtSymbols = Join-Path $binDir 'RemoteReleaseSync.pdb'
+    Assert-File $builtSymbols
+    Copy-Item -LiteralPath $builtSymbols -Destination $symbolsPath
     $packageExe = Join-Path $stageDir 'RemoteReleaseSync.exe'
     Copy-Item -LiteralPath $builtExe -Destination $packageExe
     # Copy the actual v142 runtime DLLs below instead of bundling an installer that still needs to run.
@@ -291,6 +307,27 @@ foreach ($name in $sslFiles) {
 foreach ($name in @('LICENSE', 'README.md')) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $stageDir
 }
+foreach ($name in @('SyncToolCrashReporter.dll', 'crashpad_handler.exe', 'crashpad_wer.dll')) {
+    $binary = Join-Path $crashpadBuildDir "Release\$name"
+    Assert-X64Binary $binary
+    Copy-Item -LiteralPath $binary -Destination $stageDir
+}
+$licensesDir = Join-Path $stageDir 'LICENSES'
+New-Item -ItemType Directory -Path $licensesDir | Out-Null
+if ($RuntimeNoticesDir) {
+    $RuntimeNoticesDir = Resolve-Directory $RuntimeNoticesDir
+    Get-ChildItem -LiteralPath $RuntimeNoticesDir | Copy-Item -Destination $licensesDir -Recurse
+}
+Get-ChildItem -LiteralPath (Join-Path $crashpadBuildDir 'LICENSES') | Copy-Item -Destination $licensesDir
+Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party\spdlog\LICENSE') -Destination (Join-Path $licensesDir 'spdlog.txt')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party\spdlog\include\spdlog\fmt\bundled\fmt.license.rst') -Destination (Join-Path $licensesDir 'fmt.license.rst')
+if ($RuntimeNoticesDir) {
+    $runtimeNotices = Join-Path (Split-Path -Parent $RuntimeNoticesDir) 'THIRD-PARTY-NOTICES.md'
+    if (Test-Path -LiteralPath $runtimeNotices -PathType Leaf) {
+        Copy-Item -LiteralPath $runtimeNotices -Destination $stageDir
+    }
+}
+Write-Host "Private symbols: $symbolsPath"
 foreach ($name in @('Qt5Core.dll', 'Qt5Gui.dll', 'Qt5Widgets.dll', 'Qt5Network.dll', 'platforms\qwindows.dll')) {
     Assert-File (Join-Path $stageDir $name)
 }

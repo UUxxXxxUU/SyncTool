@@ -1,6 +1,8 @@
 ﻿#pragma execution_character_set("utf-8")
 #include "configmanager.h"
+#include "diagnostics.h"
 #include "mainwindow.h"
+#include "remotedebugger.h"
 #include "syncplan.h"
 #include "syncworker.h"
 #include "synccompletiontoast.h"
@@ -24,6 +26,9 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMessageBox>
+#include <QMimeData>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QProgressBar>
 #include <QProcess>
@@ -31,11 +36,13 @@
 #include <QScreen>
 #include <QSignalSpy>
 #include <QSpinBox>
+#include <QStandardPaths>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QToolButton>
 #include <memory>
 #include <thread>
 #include <algorithm>
@@ -44,6 +51,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 namespace
@@ -415,8 +423,8 @@ private slots:
         auto *table = main->findChild<QTableWidget *>("ruleTable");
         QVERIFY(tabs && table);
         QCOMPARE(main->centralWidget()->objectName(), QString("centralWidget"));
-        QCOMPARE(tabs->count(), 2);
-        tabs->setCurrentIndex(1);
+        QCOMPARE(tabs->count(), 3);
+        tabs->setCurrentWidget(main->findChild<QWidget *>("rulesTab"));
         QTimer::singleShot(0, [&]() {
             auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
             QVERIFY(dialog);
@@ -681,8 +689,11 @@ private slots:
         main->show();
         auto *settings = main->findChild<QMenu *>("settingsMenu");
         auto *help = main->findChild<QMenu *>("helpMenu");
-        QVERIFY(settings && help);
-        QCOMPARE(main->menuBar()->actions().size(), 2);
+        auto *tools = main->findChild<QMenu *>("toolsMenu");
+        QVERIFY(settings && help && tools);
+        QCOMPARE(main->menuBar()->actions().size(), 3);
+        for (const char *name : {"remoteDebuggerAction", "diagnosticsAction"})
+            QVERIFY(tools->actions().contains(main->findChild<QAction *>(name)));
         for (const char *name : {"autoSyncAction", "preferencesAction", "saveConfigAction"})
             QVERIFY(settings->actions().contains(main->findChild<QAction *>(name)));
         for (const char *name : {"usageTipsAction", "checkUpdatesAction"})
@@ -872,6 +883,201 @@ private slots:
             main.findChild<QAction *>("saveConfigAction")->trigger();
             QCOMPARE(ConfigManager::load(configPath()).scanIntervalSeconds, expected);
         }
+    }
+
+    void passwordVisibilityAndUptime()
+    {
+        auto main = window();
+        main->show();
+        auto *password = main->findChild<QLineEdit *>("hostPasswordEdit");
+        auto *reveal = main->findChild<QToolButton *>("showPasswordButton");
+        auto *uptime = main->findChild<QLabel *>("uptimeLabel");
+        QVERIFY(password && reveal && uptime);
+        password->setText("qa-only-credential");
+        QCOMPARE(password->echoMode(), QLineEdit::Password);
+        reveal->click();
+        QCOMPARE(password->echoMode(), QLineEdit::Normal);
+        QCOMPARE(password->displayText(), QString("qa-only-credential"));
+        QEvent inactive(QEvent::WindowDeactivate);
+        QCoreApplication::sendEvent(main.get(), &inactive);
+        QCOMPARE(password->echoMode(), QLineEdit::Password);
+        QCOMPARE(password->text(), QString("qa-only-credential"));
+        const QString initial = uptime->text();
+        for (auto *timer : main->findChildren<QTimer *>()) {
+            if (timer->interval() == 1000) timer->start();
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(uptime->text() != initial, 3500);
+        QVERIFY(uptime->text().startsWith("运行 "));
+    }
+
+    void excludeAndInvertOnRealShare()
+    {
+        QVERIFY(writeFile(source() + "/app.exe"));
+        QVERIFY(writeFile(source() + "/good.dll"));
+        QVERIFY(writeFile(source() + "/SKIP.dll"));
+        QVERIFY(writeFile(source() + "/assets/example.lib"));
+        QVERIFY(writeFile(source() + "/assets/example.pdb"));
+        QVERIFY(writeFile(source() + "/assets/keep.lib"));
+        QVERIFY(writeFile(target() + "/assets/example.pdb", "existing symbol stays"));
+        QString unc = target();
+        unc = "//localhost/" + unc.left(1) + "$" + unc.mid(2);
+
+        auto main = window({{"./assets", {}}});
+        AppConfig config = ConfigManager::load(configPath());
+        config.hosts[0].sharePath = unc;
+        QVERIFY(ConfigManager::save(configPath(), config));
+        main.reset(new MainWindow(nullptr, configPath(), false));
+        stopTimers(*main);
+        auto *edit = main->findChild<QPlainTextEdit *>("exclusionsEdit");
+        auto *apply = main->findChild<QPushButton *>("applyExclusionsButton");
+        QVERIFY(edit && apply);
+        edit->setPlainText("../invalid");
+        apply->click();
+        QVERIFY(!main->findChild<QLabel *>("exclusionsError")->isHidden());
+        QVERIFY(ConfigManager::load(configPath()).excludedFilePatterns.isEmpty());
+        edit->setPlainText("skip.dll; example.lib\npdb");
+        apply->click();
+        QCOMPARE(ConfigManager::load(configPath()).excludedFilePatterns,
+                 QStringList({"example.lib", "pdb", "skip.dll"}));
+        main->findChild<QPushButton *>("invertTypeButton")->click();
+        QCOMPARE(ConfigManager::load(configPath()).selectedFileTypes, QStringList({"dll", "pdb"}));
+        main->findChild<QPushButton *>("syncButton")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(target() + "/assets/keep.lib"), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(*main), 15000);
+        QVERIFY(QFileInfo::exists(target() + "/good.dll"));
+        QVERIFY(!QFileInfo::exists(target() + "/app.exe"));
+        QVERIFY(!QFileInfo::exists(target() + "/SKIP.dll"));
+        QVERIFY(!QFileInfo::exists(target() + "/assets/example.lib"));
+        QCOMPARE(readFile(target() + "/assets/example.pdb"), QByteArray("existing symbol stays"));
+        const auto patterns = ConfigManager::load(configPath()).excludedFilePatterns;
+        const auto fingerprint = SyncPlan::fingerprint(source(), {"dll", "pdb"}, config.syncRules, patterns);
+        QVERIFY(writeFile(source() + "/SKIP.dll", "excluded source changed"));
+        QCOMPARE(SyncPlan::fingerprint(source(), {"dll", "pdb"}, config.syncRules, patterns), fingerprint);
+    }
+
+    void incompletePdbWarningOnRealShare()
+    {
+#ifdef Q_OS_WIN
+        QVERIFY(writeFile(source() + "/module.dll", "new DLL"));
+        QVERIFY(writeFile(source() + "/module.pdb", "new symbols"));
+        QVERIFY(writeFile(target() + "/module.pdb", "old"));
+        QString unc = target();
+        unc = "//localhost/" + unc.left(1) + "$" + unc.mid(2);
+        auto originalWindow = window();
+        AppConfig config = ConfigManager::load(configPath());
+        config.hosts[0].sharePath = unc;
+        config.selectedFileTypes = QStringList({"dll", "pdb"});
+        QVERIFY(ConfigManager::save(configPath(), config));
+        originalWindow.reset();
+        MainWindow main(nullptr, configPath(), false);
+        stopTimers(main);
+        main.show();
+        const auto symbol = QDir::toNativeSeparators(target() + "/module.pdb").toStdWString();
+        const HANDLE lock = CreateFileW(symbol.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        QVERIFY(lock != INVALID_HANDLE_VALUE);
+        struct FileLock {
+            HANDLE handle;
+            ~FileLock() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+        } guard{lock};
+
+        auto *sync = main.findChild<QPushButton *>("syncButton");
+        sync->click();
+        QTRY_COMPARE_WITH_TIMEOUT(main.findChildren<QMessageBox *>().size(), 1, 15000);
+        auto *warning = main.findChild<QMessageBox *>();
+        QCOMPARE(warning->windowTitle(), QString("PDB 同步提醒"));
+        QCOMPARE(warning->detailedText(), QString("module.pdb"));
+        QCOMPARE(readFile(target() + "/module.dll"), QByteArray("new DLL"));
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(main), 15000);
+        warning->close();
+        QTRY_VERIFY(main.findChildren<QMessageBox *>().isEmpty());
+        sync->click();
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(main), 15000);
+        QVERIFY(main.findChildren<QMessageBox *>().isEmpty());
+
+        CloseHandle(lock);
+        guard.handle = INVALID_HANDLE_VALUE;
+        QCOMPARE(readFile(target() + "/module.pdb"), QByteArray("old"));
+        sync->click();
+        QTRY_COMPARE_WITH_TIMEOUT(readFile(target() + "/module.pdb"), QByteArray("new symbols"), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(main), 15000);
+        QVERIFY(main.findChildren<QMessageBox *>().isEmpty());
+#endif
+    }
+
+    void logRetentionRemovesOnlyManagedFiles()
+    {
+        const QString dir = root() + "/test logs";
+        QVERIFY(writeFile(dir + "/synctool-2000-01-01.log"));
+        QVERIFY(writeFile(dir + "/synctool-2000-01-01.1.log"));
+        QVERIFY(writeFile(dir + "/synctool-2000-01-01.unrelated.log"));
+        QVERIFY(writeFile(dir + "/unrelated.log"));
+        const QString today = QDateTime::currentDateTimeUtc().date().toString(Qt::ISODate);
+        QVERIFY(writeFile(dir + "/synctool-" + today + ".log"));
+        Diagnostics::maintainLogs(dir, 0);
+        QVERIFY(QFileInfo::exists(dir + "/synctool-2000-01-01.log"));
+        Diagnostics::maintainLogs(dir, 30);
+        QVERIFY(!QFileInfo::exists(dir + "/synctool-2000-01-01.log"));
+        QVERIFY(!QFileInfo::exists(dir + "/synctool-2000-01-01.1.log"));
+        QVERIFY(QFileInfo::exists(dir + "/synctool-2000-01-01.unrelated.log"));
+        QVERIFY(QFileInfo::exists(dir + "/unrelated.log"));
+        QVERIFY(QFileInfo::exists(dir + "/synctool-" + today + ".log"));
+        AppConfig config;
+        config.logRetentionDays = 14;
+        QVERIFY(ConfigManager::save(configPath(), config));
+        QCOMPARE(ConfigManager::load(configPath()).logRetentionDays, 14);
+    }
+
+    void debuggerDiscoveryAndClipboard()
+    {
+        if (!qEnvironmentVariableIsSet("SYNC_QA_DEBUGGER_INSTALLED")) QSKIP("Requires installed Visual Studio Remote Debugger files");
+        RemoteDebugger dialog;
+        dialog.show();
+        auto *table = dialog.findChild<QTableWidget *>("debuggerPaths");
+        QTRY_VERIFY_WITH_TIMEOUT(table->rowCount() >= 2, 10000);
+        QStringList architectures;
+        for (int row = 0; row < table->rowCount(); ++row) {
+            QVERIFY(QFileInfo::exists(table->item(row, 3)->text()));
+            QVERIFY(!table->item(row, 1)->text().isEmpty());
+            architectures.append(table->item(row, 2)->text());
+        }
+        QVERIFY(architectures.contains("x86"));
+        QVERIFY(architectures.contains("x64"));
+        table->item(0, 0)->setCheckState(Qt::Checked);
+        const QString exe = table->item(0, 3)->text();
+        const QString folder = QFileInfo(exe).absolutePath();
+        dialog.findChild<QPushButton *>("copyPathsButton")->click();
+        QCOMPARE(QApplication::clipboard()->text(), exe);
+        dialog.findChild<QPushButton *>("copyFoldersButton")->click();
+        QCOMPARE(QApplication::clipboard()->mimeData()->urls(), QList<QUrl>({QUrl::fromLocalFile(folder)}));
+#ifdef Q_OS_WIN
+        if (QGuiApplication::platformName() == "windows") {
+            QVERIFY(IsClipboardFormatAvailable(CF_HDROP));
+            QVERIFY(OpenClipboard(nullptr));
+            const auto drop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
+            wchar_t folderPath[32768] = {};
+            const UINT count = drop ? DragQueryFileW(drop, 0xffffffff, nullptr, 0) : 0;
+            const UINT length = drop ? DragQueryFileW(drop, 0, folderPath, 32768) : 0;
+            CloseClipboard();
+            QCOMPARE(count, UINT(1));
+            QVERIFY(length > 0);
+            QCOMPARE(QDir::fromNativeSeparators(QString::fromWCharArray(folderPath)), folder);
+        }
+#endif
+    }
+
+    void microsoftDebuggerDownload()
+    {
+        if (!qEnvironmentVariableIsSet("SYNC_QA_REMOTE_DOWNLOAD")) QSKIP("Requires live Microsoft network and Windows Downloads folder");
+        RemoteDebugger dialog;
+        QSignalSpy finished(&dialog, &RemoteDebugger::downloadFinished);
+        dialog.findChild<QPushButton *>("downloadDebuggerButton")->click();
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 120000);
+        const auto result = finished.takeFirst();
+        const QString path = result.at(0).toString();
+        QVERIFY2(result.at(1).toString().isEmpty(), qPrintable(result.at(1).toString()));
+        QVERIFY(QFileInfo(path).size() > 1000000);
+        QCOMPARE(QFileInfo(path).absolutePath(), QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
+        QVERIFY(QFile::remove(path));
     }
 };
 

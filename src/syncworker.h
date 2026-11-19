@@ -42,7 +42,7 @@ public:
     };
 
     SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes, bool performCopy,
-               QVector<SyncRule> rules = {}, QObject *parent = nullptr);
+               QVector<SyncRule> rules = {}, QObject *parent = nullptr, QStringList exclusions = {});
     void emitProgress(int percent, const QString &detail);
     void emitRecentFiles(const QStringList &files, const QString &title);
     bool isCancelled() const;
@@ -55,6 +55,7 @@ public slots:
 
 signals:
     void copySucceeded(const QString &hostId, const QDateTime &completedUtc);
+    void symbolsVerified(const QString &hostId, const QStringList &pendingPdbs, bool verified);
     void progressChanged(const QString &hostId, int percent, const QString &detail);
     void recentFilesChanged(const QString &hostId, const QStringList &files, const QString &title);
     void stateChanged(const QString &hostId,
@@ -82,6 +83,8 @@ private:
     QString m_releaseDir;
     QStringList m_fileTypes;
     QVector<SyncRule> m_rules;
+    QStringList m_exclusions;
+    QString m_operationId;
     bool m_performCopy = false;
     std::shared_ptr<std::atomic<bool>> m_cancelled;
 };

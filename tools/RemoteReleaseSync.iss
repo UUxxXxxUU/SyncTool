@@ -60,6 +60,7 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 [InstallDelete]
 ; 安装到旧版程序目录时先移除旧版程序文件，保留 sync_config.json 等用户数据。
 Type: files; Name: "{app}\{#AppExeName}"; Check: IsExistingProgramDir
+Type: files; Name: "{app}\crashpad_handler.exe"; Check: IsExistingProgramDir
 Type: files; Name: "{app}\*.dll"; Check: IsExistingProgramDir
 Type: files; Name: "{app}\LICENSE"; Check: IsExistingProgramDir
 Type: files; Name: "{app}\README.md"; Check: IsExistingProgramDir
@@ -69,6 +70,9 @@ Type: filesandordirs; Name: "{app}\imageformats"; Check: IsExistingProgramDir
 Type: filesandordirs; Name: "{app}\platforms"; Check: IsExistingProgramDir
 Type: filesandordirs; Name: "{app}\styles"; Check: IsExistingProgramDir
 Type: filesandordirs; Name: "{app}\translations"; Check: IsExistingProgramDir
+
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\Windows Error Reporting\RuntimeExceptionHelperModules"; ValueType: none; ValueName: "{app}\crashpad_wer.dll"; Flags: uninsdeletevalue
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "sync_config.json"; Flags: ignoreversion recursesubdirs createallsubdirs

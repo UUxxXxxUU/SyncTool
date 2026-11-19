@@ -63,6 +63,17 @@ bool validateAncestors(QString path, QString *error)
     }
     return true;
 }
+
+QRegularExpression fileNamePattern(const QString &pattern)
+{
+    QString expression = QRegularExpression::escape(pattern);
+    expression.replace(QStringLiteral("\\*"), QStringLiteral(".*"));
+    expression.replace(QStringLiteral("\\?"), QStringLiteral("."));
+    if (!pattern.contains('.') && !pattern.contains('*') && !pattern.contains('?')) {
+        expression = QString("(?:.*\\.)?%1").arg(expression);
+    }
+    return QRegularExpression(QString("\\A(?:%1)\\z").arg(expression), QRegularExpression::CaseInsensitiveOption);
+}
 }
 
 bool SyncPlan::normalizeTypes(const QStringList &values, QStringList *types, QString *error)
@@ -83,6 +94,25 @@ bool SyncPlan::normalizeTypes(const QStringList &values, QStringList *types, QSt
         if (!types->contains(value)) types->append(value);
     }
     types->sort();
+    return true;
+}
+
+bool SyncPlan::normalizeExclusions(const QStringList &values, QStringList *patterns, QString *error)
+{
+    QStringList normalized;
+    const QRegularExpression invalid(R"pattern([\\/:"<>|;\x00-\x1f])pattern");
+    for (QString value : values) {
+        value = value.trimmed();
+        if (value.isEmpty()) continue;
+        if (value.contains(invalid) || value == "." || value == "..") {
+            *error = QString("无效的排除项：%1。请填写文件名或通配符，例如 xx.dll 或 *.pdb。").arg(value);
+            return false;
+        }
+        if (value.startsWith('.')) value.prepend('*');
+        if (!normalized.contains(value, Qt::CaseInsensitive)) normalized.append(value);
+    }
+    normalized.sort(Qt::CaseInsensitive);
+    *patterns = normalized;
     return true;
 }
 
@@ -127,7 +157,8 @@ bool SyncPlan::validateRemotePath(const QString &base, const QString &relativePa
 }
 
 bool SyncPlan::build(const QString &localBase, const QString &remoteBase, const QStringList &baseTypes,
-                     const QVector<SyncRule> &rules, QVector<Scope> *scopes, QString *error)
+                     const QVector<SyncRule> &rules, QVector<Scope> *scopes, QString *error,
+                     const QStringList &exclusions)
 {
     error->clear();
     scopes->clear();
@@ -138,6 +169,12 @@ bool SyncPlan::build(const QString &localBase, const QString &remoteBase, const 
         return false;
     }
     if (!validateRemotePath(remoteBase, ".", error)) return false;
+    QStringList normalizedExclusions;
+    if (!normalizeExclusions(exclusions, &normalizedExclusions, error)) return false;
+    QVector<QRegularExpression> excludedNames;
+    for (const QString &pattern : normalizedExclusions) {
+        excludedNames.append(fileNamePattern(pattern));
+    }
     if (!baseTypes.isEmpty()) {
         Scope scope;
         scope.relativePath = ".";
@@ -164,7 +201,8 @@ bool SyncPlan::build(const QString &localBase, const QString &remoteBase, const 
         *error = "请勾选基本同步类型，或启用至少一条附加同步规则。";
         return false;
     }
-    for (const Scope &scope : *scopes) {
+    for (Scope &scope : *scopes) {
+        scope.excludedNames = excludedNames;
         if (!validateAncestors(scope.localPath, error)) return false;
         if (!remote.isEmpty() && !validateAncestors(scope.remotePath, error)) return false;
         if (remote.isEmpty()) continue;
@@ -205,6 +243,9 @@ SyncPlan::Files SyncPlan::collect(const QString &base, const QVector<Scope> &sco
         }
         auto addFile = [&](const QFileInfo &info) {
             if (!scope.fileTypes.isEmpty() && !scope.fileTypes.contains(info.suffix().toLower())) return;
+            const QString name = info.fileName();
+            if (std::any_of(scope.excludedNames.cbegin(), scope.excludedNames.cend(),
+                            [&](const QRegularExpression &pattern) { return pattern.match(name).hasMatch(); })) return;
             File file;
             file.absolutePath = info.absoluteFilePath();
             file.relativePath = clean(baseDir.relativeFilePath(file.absolutePath));
@@ -236,11 +277,12 @@ SyncPlan::Files SyncPlan::collect(const QString &base, const QVector<Scope> &sco
     return files;
 }
 
-QString SyncPlan::fingerprint(const QString &localBase, const QStringList &baseTypes, const QVector<SyncRule> &rules)
+QString SyncPlan::fingerprint(const QString &localBase, const QStringList &baseTypes,
+                               const QVector<SyncRule> &rules, const QStringList &exclusions)
 {
     QVector<Scope> scopes;
     QString error;
-    if (!build(localBase, QString(), baseTypes, rules, &scopes, &error)) return "error:" + error;
+    if (!build(localBase, QString(), baseTypes, rules, &scopes, &error, exclusions)) return "error:" + error;
     const Files files = collect(localBase, scopes, true, nullptr, &error);
     if (!error.isEmpty()) return "error:" + error;
     QStringList records;
@@ -250,6 +292,7 @@ QString SyncPlan::fingerprint(const QString &localBase, const QStringList &baseT
     records.sort();
     QCryptographicHash hash(QCryptographicHash::Sha256);
     hash.addData(clean(localBase).toUtf8());
+    for (const auto &pattern : scopes.first().excludedNames) hash.addData(("\nexclude:" + pattern.pattern()).toUtf8());
     for (const Scope &scope : scopes) hash.addData(("\nrule:" + scope.relativePath + ':' + scope.fileTypes.join(';')).toUtf8());
     for (const QString &record : records) hash.addData(('\n' + record).toUtf8());
     return QString::fromLatin1(hash.result().toHex());

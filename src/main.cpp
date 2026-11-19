@@ -1,5 +1,6 @@
 ﻿#pragma execution_character_set("utf-8")
 #include "mainwindow.h"
+#include "diagnostics.h"
 
 #include <QApplication>
 #include <QFont>
@@ -15,7 +16,7 @@ int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
     app.setApplicationName("RemoteReleaseSync");
-    app.setApplicationVersion("1.0.9");
+    app.setApplicationVersion("1.1.0");
     app.setOrganizationName("LocalTools");
     app.setQuitOnLastWindowClosed(false);
 
@@ -46,10 +47,15 @@ int main(int argc, char *argv[])
     font.setPointSize(10);
     app.setFont(font);
 
-    MainWindow window;
-    if (!startupLaunch) {
-        window.show();
+    Diagnostics::start();
+    int result = 0;
+    {
+        MainWindow window;
+        if (!startupLaunch) {
+            window.show();
+        }
+        result = app.exec();
     }
-
-    return app.exec();
+    Diagnostics::stop();
+    return result;
 }

@@ -2,7 +2,7 @@
 <ui version="4.0">
  <class>PreferencesDialog</class>
  <widget class="QDialog" name="PreferencesDialog">
-  <property name="geometry"><rect><x>0</x><y>0</y><width>560</width><height>420</height></rect></property>
+  <property name="geometry"><rect><x>0</x><y>0</y><width>560</width><height>480</height></rect></property>
   <property name="minimumSize"><size><width>520</width><height>400</height></size></property>
   <property name="windowTitle"><string>偏好设置</string></property>
   <layout class="QVBoxLayout" name="layout">
@@ -43,6 +43,19 @@
       <property name="text"><string>程序每 2 小时自动检查更新。开启无感更新后，会在没有同步任务时安装并重启。</string></property>
       <property name="wordWrap"><bool>true</bool></property>
      </widget></item>
+    </layout>
+   </widget></item>
+   <item><widget class="QGroupBox" name="diagnosticsGroup">
+    <property name="title"><string>诊断日志</string></property>
+    <layout class="QHBoxLayout" name="retentionLayout">
+     <item><widget class="QLabel" name="retentionLabel"><property name="text"><string>保留天数：</string></property></widget></item>
+     <item><widget class="QSpinBox" name="logRetentionSpin">
+      <property name="maximum"><number>365</number></property>
+      <property name="specialValueText"><string>不按天清理</string></property>
+      <property name="suffix"><string> 天</string></property>
+      <property name="toolTip"><string>在启动、保存设置和运行期间定期清理更早的 SyncTool 日志。</string></property>
+     </widget></item>
+     <item><spacer name="retentionSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
     </layout>
    </widget></item>
    <item><widget class="QLabel" name="errorLabel">

@@ -59,7 +59,7 @@ RemoteReleaseSync.exe
 
 - Windows PowerShell 5.1 或更高版本。
 - Qt 5.12.3 的 `msvc2017_64` Kit，包含 `qmake.exe`、`windeployqt.exe`；脚本不更改依赖版本。
-- Visual Studio C++ 工具、现有项目使用的 v142 工具集、Windows SDK 10.0.26100.0，以及 Qt VS Tools 提供的 Qt/MSBuild。
+- Visual Studio 2022 C++ 工具、v142 工具集、Windows 10/11 SDK、CMake，以及 Qt VS Tools 提供的 Qt/MSBuild。Crashpad 使用 Visual Studio 2022 的 C++ 工具构建。
 - 与当前 Qt 兼容的 OpenSSL 1.0.x x64 DLL：`libeay32.dll`、`ssleay32.dll`。文件名中的 `32` 不代表 DLL 是 32 位；脚本会检查 x64 架构。此 Qt Kit 使用 OpenSSL 1.0 接口，不能直接换成 OpenSSL 1.1 或 3；由使用者提供来源可信且依赖齐全的 DLL。
 - Inno Setup 6.3 或更高版本（`winget install JRSoftware.InnoSetup`），用于生成安装程序；脚本自动查找 `ISCC.exe`，也可用 `-InnoSetupDir` 指定目录。
 - 上传时还需 Git、GitHub CLI，以及对 `UUxxXxxUU/SyncTool` 的写入权限。
@@ -84,7 +84,7 @@ Qt 默认从 PATH 中的 `qmake.exe` 定位，Visual Studio 自动选择带 v142
 
 脚本不自动收集 OpenSSL 的额外运行依赖。例如本地测试使用的 OpenSSL 1.0.1g x64 DLL 依赖 `MSVCR100.dll`，目标电脑还需 Visual C++ 2010 x64 运行库；Universal CRT 和 v142 运行库不能替代它。正式分发前需补齐所选 DLL 的依赖并在干净电脑验证。
 
-脚本目前只复制应用的 LICENSE，未自动收集第三方许可。正式分发需随包保留所部署 Qt 及其第三方组件、OpenSSL 的许可证和版权声明，提供对应 Qt 源码获取信息，并核实所选二进制的再分发条件。
+脚本会加入 Crashpad、spdlog 和 fmt 许可。通过 `-RuntimeNoticesDir` 提供所部署 Qt 及其第三方组件、OpenSSL 的许可证和版权声明。如果该目录的同级存在 `THIRD-PARTY-NOTICES.md`，也会加入运行包，可在此文件记录对应 Qt 和 OpenSSL 的源码获取信息。打包目录单独保留与 EXE 匹配的 `RemoteReleaseSync.pdb`，供维护人员分析 Dump。
 
 安装 GitHub CLI 并首次登录：
 
@@ -135,6 +135,16 @@ Release 目录是两端路径的基准。例如本地 `D:\test sync\a\Release`�
 `../` 可以进入远端 Release 的上级，但不能超出共享根目录，例如 `\\SERVER\b`。路径不存在、文件与目录冲突、包含符号链接或目录联接时，会显示错误。远端多余文件保留，差异检查只覆盖选中的类型和规则范围。旧配置中没有 `syncRules` 时保持原来的同步位置和筛选；新配置请配合 1.0.8 或更新版本使用。
 
 ## 界面维护与验证
+
+### 远程调试与诊断
+
+- 在“工具 → 远程调试器”查看本机的 `msvsmon.exe` 版本、架构和路径。勾选后可复制路径文本，也可将可粘贴的完整架构目录放入剪贴板，在资源管理器中粘贴到目标共享。来自不同版本的同名架构目录请分批粘贴。
+- 选择远程电脑的 Visual Studio 版本及 Windows 架构后，可以后台下载微软 Remote Tools。通过签名校验的安装包会保存到 Windows 的“下载”目录，完成后会收到提示。历史安装程序可从微软官方文档获取。[Microsoft Learn 远程调试文档](https://learn.microsoft.com/zh-cn/visualstudio/debugger/remote-debugging)
+- 密码输入框可切换显示。切换主机、隐藏窗口或失去窗口焦点时会恢复掩码。状态栏显示本次运行时长。
+- “排除文件”支持 `xx.dll`、`xx.lib`、`pdb`、`*.pdb` 和 `plugin?.dll`，以分号或换行分隔，按文件名忽略大小写匹配。排除规则同时应用于基本类型、附加规则、状态检查和自动扫描。“反选类型”会反转基本类型的勾选状态。
+- 复制结束后，会校验本轮计划复制的 PDB。目标 PDB 仍缺失、与本地有差异或无法完成校验时，会按主机提示。处理文件占用或共享故障后，可以手动同步重试。
+- “工具 → 打开诊断目录”可查看 `Logs` 和 `CrashDumps`。日志由 spdlog 按 UTC 日期和大小滚动，默认保留 30 天，可在偏好设置设定。程序启动、修改保留设置及运行期间每小时检查一次。
+- 崩溃时由独立的 Crashpad 进程生成 SyncTool 的本地 minidump。部署包附带采集组件。手动构建的应用可用 `tools/build-crashpad.ps1` 构建它，再把输出的 `SyncToolCrashReporter.dll`、`crashpad_handler.exe` 和 `crashpad_wer.dll` 放在应用 EXE 同目录。使用匹配版本的应用 PDB 和 WinDbg 查看异常堆栈。[Crashpad 设计说明](https://chromium.googlesource.com/crashpad/crashpad/+/HEAD/doc/overview_design.md)
 
 固定布局保存在 `src/mainwindow.ui`、`syncruledialog.ui`、`usagetipsdialog.ui`、`updatedialog.ui`、`recentcopypreview.ui`。请用 Qt Designer 编辑 `.ui`，不要编辑构建时生成的 `ui_*.h`。信号连接、主机行、进度条及按更新数据生成的分类内容仍在 C++ 中处理。
 

@@ -1,11 +1,14 @@
 ﻿#pragma execution_character_set("utf-8")
 
 #include "syncworker.h"
+#include "diagnostics.h"
 
 #include <QByteArray>
 #include <QDir>
 #include <QDirIterator>
 #include <QElapsedTimer>
+#include <QMetaEnum>
+#include <QUuid>
 #include <QMap>
 #include <QFileInfo>
 #include <QHash>
@@ -397,7 +400,7 @@ bool connectShare(const QString &fullPath, const QString &username, const QStrin
 // Copy only the planned files. Per-directory batches also support ../ rules and
 // overlapping filters without copying a file twice or widening the selected scope.
 bool runRobocopy(SyncWorker *worker, const QString &localBase,
-                 const QVector<PendingCopy> &pendingCopies, int threadCount, QString *error)
+                 const QVector<PendingCopy> &pendingCopies, int threadCount, const QString &operationId, QString *error)
 {
     struct Batch { QString sourceDir; QString destinationDir; QVector<PendingCopy> files; };
     QVector<Batch> batches;
@@ -454,6 +457,8 @@ bool runRobocopy(SyncWorker *worker, const QString &localBase,
         process.setProcessChannelMode(QProcess::MergedChannels);
         process.start("robocopy", arguments);
         if (!process.waitForStarted(5000)) {
+            Diagnostics::record("sync.robocopy_start_failed", QString("run=%1 process_error=%2")
+                                .arg(operationId).arg(process.error()), true);
             *error = QString("无法启动 robocopy：%1").arg(process.errorString());
             return false;
         }
@@ -487,9 +492,13 @@ bool runRobocopy(SyncWorker *worker, const QString &localBase,
         }
         output.append(process.readAllStandardOutput());
         if (process.exitStatus() != QProcess::NormalExit || process.exitCode() >= 8) {
+            const QString processOutput = QString::fromLocal8Bit(output);
+            Diagnostics::record("sync.robocopy_failed", QString("run=%1 batch=%2 exit=%3 win32=%4")
+                                .arg(operationId).arg(batchIndex + 1).arg(process.exitCode())
+                                .arg(extractRobocopyErrorCode(processOutput)), true);
             *error = QString("%1：%2").arg(nativePath(scope), process.exitStatus() == QProcess::NormalExit
-                ? describeRobocopyFailure(process.exitCode(), QString::fromLocal8Bit(output))
-                : QString("robocopy 异常退出：%1").arg(outputTail(QString::fromLocal8Bit(output))));
+                ? describeRobocopyFailure(process.exitCode(), processOutput)
+                : QString("robocopy 异常退出：%1").arg(outputTail(processOutput)));
             worker->emitRecentFiles(processed, QString("本轮处理记录（同步失败，共 %1 个）").arg(processed.size()));
             return false;
         }
@@ -568,12 +577,15 @@ SyncWorker::ComparisonSummary compareFiles(const QHash<QString, SyncWorker::Loca
 }
 }
 
-SyncWorker::SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes, bool performCopy, QVector<SyncRule> rules, QObject *parent)
+SyncWorker::SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes, bool performCopy,
+                       QVector<SyncRule> rules, QObject *parent, QStringList exclusions)
     : QObject(parent)
     , m_host(host)
     , m_releaseDir(releaseDir)
     , m_fileTypes(fileTypes)
     , m_rules(std::move(rules))
+    , m_exclusions(std::move(exclusions))
+    , m_operationId(QUuid::createUuid().toString(QUuid::WithoutBraces))
     , m_performCopy(performCopy)
     , m_cancelled(std::make_shared<std::atomic<bool>>(false))
 {
@@ -625,6 +637,11 @@ void SyncWorker::emitState(int state,
                            const QString &detail,
                            const QString &detailTooltip)
 {
+    if (state != Checking && state != Syncing) {
+        Diagnostics::record("sync.result", QString("run=%1 state=%2 difference_pct=%3")
+                            .arg(m_operationId).arg(QString::fromLatin1(QMetaEnum::fromType<VisualState>().valueToKey(state)))
+                            .arg(mismatchPercentValue), state == Error || state == Disconnected);
+    }
     emit stateChanged(m_host.id, state, mismatchPercentValue, statusText, detail, detailTooltip);
 }
 
@@ -674,6 +691,7 @@ void SyncWorker::process()
     const QString localRoot = normalizedReleaseDir();
     const QString remoteRoot = normalizedRemoteDir();
     const QString displayName = hostDisplayName(m_host);
+    Diagnostics::record("sync.start", QString("run=%1 mode=%2").arg(m_operationId, m_performCopy ? "copy" : "check"));
 
     if (localRoot.isEmpty() || !QFileInfo::exists(localRoot)) {
         finishWithError(Error, "本地目录无效", "请先配置有效的本地 release 目录");
@@ -718,7 +736,7 @@ void SyncWorker::process()
 
     QVector<SyncPlan::Scope> scopes;
     QString planError;
-    if (!SyncPlan::build(localRoot, remoteRoot, m_fileTypes, m_rules, &scopes, &planError)) {
+    if (!SyncPlan::build(localRoot, remoteRoot, m_fileTypes, m_rules, &scopes, &planError, m_exclusions)) {
         finishWithError(Error, "同步规则无效", planError);
         return;
     }
@@ -747,6 +765,7 @@ void SyncWorker::process()
     }
 
     if (pendingCopies.isEmpty()) {
+        emit symbolsVerified(m_host.id, {}, true);
         const bool hasBlockingDifference = hasSyncBlockingDifference(summary);
         emitProgress(100, "无需复制");
         emitState(hasBlockingDifference ? Mismatch : InSync,
@@ -763,6 +782,8 @@ void SyncWorker::process()
     }
 
     const int threadCount = recommendedRobocopyThreads(pendingCopies);
+    Diagnostics::record("sync.copy", QString("run=%1 files=%2 bytes=%3 threads=%4")
+                        .arg(m_operationId).arg(pendingCopies.size()).arg(summary.totalCopyBytes).arg(threadCount));
     emitProgress(0, QString("待同步 %1 个文件，robocopy %2 线程").arg(pendingCopies.size()).arg(threadCount));
     emitState(Syncing,
               initialMismatch,
@@ -773,19 +794,36 @@ void SyncWorker::process()
                   .arg(threadCount));
 
     QString copyError;
-    if (!runRobocopy(this, localRoot, pendingCopies, threadCount, &copyError)) {
-        summary.failedCount++;
+    const bool copyOk = runRobocopy(this, localRoot, pendingCopies, threadCount, m_operationId, &copyError);
+    if (finishIfCancelled()) return;
+    const auto isPdb = [](const PendingCopy &copy) { return copy.relativePath.endsWith(".pdb", Qt::CaseInsensitive); };
+    if (!copyOk && std::none_of(pendingCopies.cbegin(), pendingCopies.cend(), isPdb)) {
         finishWithError(Error, "同步失败", copyError);
         return;
     }
 
-    if (finishIfCancelled()) {
-        return;
-    }
-
-    // Re-read the destination instead of assuming that a successful process copied every file.
+    // A failed robocopy batch can still have copied some binaries. Verify the symbols in either case.
     const auto finalRemoteFiles = SyncPlan::collect(remoteRoot, scopes, false, m_cancelled.get(), &planError);
     if (finishIfCancelled()) return;
+    QStringList pendingPdbs;
+    for (const PendingCopy &copy : pendingCopies) {
+        if (!isPdb(copy)) continue;
+        const QString key = copy.relativePath.toCaseFolded();
+        const auto remote = finalRemoteFiles.constFind(key);
+        if (!planError.isEmpty() || remote == finalRemoteFiles.constEnd() || !sameFile(localFiles.value(key), remote.value())) {
+            pendingPdbs.append(copy.relativePath);
+        }
+    }
+    pendingPdbs.sort(Qt::CaseInsensitive);
+    if (!pendingPdbs.isEmpty()) {
+        Diagnostics::record("sync.pdb_missing", QString("run=%1 count=%2 verified=%3")
+                            .arg(m_operationId).arg(pendingPdbs.size()).arg(planError.isEmpty()), true);
+    }
+    emit symbolsVerified(m_host.id, pendingPdbs, planError.isEmpty());
+    if (!copyOk) {
+        finishWithError(Error, "同步失败", copyError);
+        return;
+    }
     if (!planError.isEmpty()) { finishWithError(Error, "同步后校验失败", planError); return; }
     ComparisonSummary finalSummary = compareFiles(localFiles, finalRemoteFiles, nullptr, remoteRoot);
     const int finalMismatch = mismatchPercent(finalSummary);

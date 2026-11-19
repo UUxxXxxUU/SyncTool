@@ -37,12 +37,14 @@ struct AppConfig
     QString releaseDir;
     QStringList fileTypes;
     QStringList selectedFileTypes;
+    QStringList excludedFilePatterns;
     QVector<SyncRule> syncRules;
     bool autoSync = true;
     bool startWithSystem = false;
     bool checkUpdatesOnStartup = false;
     bool silentUpdate = false;
     int scanIntervalSeconds = 5;
+    int logRetentionDays = 30;
     QVector<HostEntry> hosts;
     QStringList releaseDirHistory;
 };
