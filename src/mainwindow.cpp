@@ -81,7 +81,6 @@
 #include <QTableWidgetItem>
 #include <QThread>
 #include <QTextBrowser>
-#include <QTextDocument>
 #include <QTextOption>
 #include <QTimer>
 #include <QToolButton>
@@ -91,7 +90,6 @@
 #include <QVBoxLayout>
 #include <QVersionNumber>
 #include <QUuid>
-#include <QtMath>
 #include <qdatetime.h>
 
 #ifdef Q_OS_WIN
@@ -975,13 +973,8 @@ void MainWindow::showExclusionsExample()
     layout->addWidget(buttons);
 
     QScreen *screen = QGuiApplication::screenAt(frameGeometry().center());
-    const QSize available = screen ? screen->availableGeometry().size() - QSize(32, 48) : QSize(690, 520);
-    const int outerWidth = qMin(690, available.width());
-    const QMargins margins = layout->contentsMargins();
-    document->document()->setTextWidth(outerWidth - margins.left() - margins.right() - 24);
-    const int outerHeight = qCeil(document->document()->size().height()) + buttons->sizeHint().height()
-        + margins.top() + margins.bottom() + layout->spacing() + 16;
-    dialog->resize(outerWidth, qMin(outerHeight, available.height()));
+    const QSize preferred(690, qMax(420, document->fontMetrics().lineSpacing() * 17 + 76));
+    dialog->resize(screen ? preferred.boundedTo(screen->availableGeometry().size() - QSize(32, 48)) : preferred);
     dialog->open();
 }
 
