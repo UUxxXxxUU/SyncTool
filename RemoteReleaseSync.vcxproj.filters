@@ -48,6 +48,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\appearance.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\appconfig.h">
       <Filter>Header Files</Filter>
     </ClInclude>

@@ -3,19 +3,24 @@
 #include "diagnostics.h"
 #include "ui_remotedebugger.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
+#include <QFontDatabase>
+#include <QGuiApplication>
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeySequence>
 #include <QMimeData>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QProcess>
+#include <QScreen>
 #include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
@@ -39,6 +44,7 @@
 namespace
 {
 constexpr qint64 maxInstallerSize = 256 * 1024 * 1024;
+constexpr int pathColumn = 3;
 
 struct Installation
 {
@@ -190,10 +196,49 @@ RemoteDebugger::RemoteDebugger(QWidget *parent)
     , m_timeout(new QTimer(this))
 {
     m_ui->setupUi(this);
+    QScreen *screen = parent ? QGuiApplication::screenAt(parent->frameGeometry().center())
+                             : QGuiApplication::primaryScreen();
+    if (screen) {
+        resize(size().boundedTo(screen->availableGeometry().size() - QSize(32, 48)));
+    }
     for (int column : {0, 1, 2}) {
         m_ui->debuggerPaths->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
     }
-    m_ui->debuggerPaths->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_ui->debuggerPaths->horizontalHeader()->setSectionResizeMode(pathColumn, QHeaderView::Stretch);
+    m_ui->debuggerPaths->setMinimumHeight(m_ui->debuggerPaths->horizontalHeader()->sizeHint().height()
+        + m_ui->debuggerPaths->verticalHeader()->defaultSectionSize() * 4 + 4);
+    m_ui->debuggerPaths->setMouseTracking(true);
+    connect(m_ui->debuggerPaths, &QTableWidget::itemClicked, this, [this](QTableWidgetItem *item) {
+        if (item->column() == pathColumn) openDebuggerFolder(item->row());
+    });
+    connect(m_ui->debuggerPaths, &QTableWidget::cellEntered, this, [this](int, int column) {
+        auto *viewport = m_ui->debuggerPaths->viewport();
+        if (column == pathColumn) viewport->setCursor(Qt::PointingHandCursor);
+        else viewport->unsetCursor();
+    });
+    connect(m_ui->debuggerPaths, &QTableWidget::viewportEntered, this, [this]() {
+        m_ui->debuggerPaths->viewport()->unsetCursor();
+    });
+    auto *openFolder = new QAction("打开所在目录", m_ui->debuggerPaths);
+    openFolder->setShortcuts({QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)});
+    openFolder->setShortcutContext(Qt::WidgetShortcut);
+    m_ui->debuggerPaths->addAction(openFolder);
+    connect(openFolder, &QAction::triggered, this, [this]() {
+        openDebuggerFolder(m_ui->debuggerPaths->currentRow());
+    });
+
+    QFont commandFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    commandFont.setPointSizeF(m_ui->argumentsEdit->font().pointSizeF());
+    m_ui->argumentsEdit->setFont(commandFont);
+    m_ui->argumentsEdit->setText("/noauth /anyuser /nosecuritywarn /port 4026 /timeout 999999999");
+    connect(m_ui->copyArgumentsButton, &QPushButton::clicked, this, [this]() {
+        const QString arguments = m_ui->argumentsEdit->text();
+        QClipboard *clipboard = QApplication::clipboard();
+        clipboard->setText(arguments);
+        m_ui->debuggerStatus->setText(clipboard->text() == arguments
+            ? "已复制启动参数。" : "剪贴板暂时不可用，请重试。");
+    });
+
     m_ui->debuggerVersion->addItem("Visual Studio 2026", 18);
     m_ui->debuggerVersion->addItem("Visual Studio 2022", 17);
     m_ui->debuggerVersion->addItem("Visual Studio 2019", 16);
@@ -297,14 +342,36 @@ void RemoteDebugger::showPaths(const QByteArray &vswhereOutput)
         m_ui->debuggerPaths->setItem(row, 1, new QTableWidgetItem(install.version));
         m_ui->debuggerPaths->setItem(row, 2, new QTableWidgetItem(install.architecture));
         auto *path = new QTableWidgetItem(QDir::toNativeSeparators(install.path));
-        path->setToolTip(path->text());
-        m_ui->debuggerPaths->setItem(row, 3, path);
+        QFont linkFont = m_ui->debuggerPaths->font();
+        linkFont.setUnderline(true);
+        path->setFont(linkFont);
+        path->setForeground(QColor("#145a9c"));
+        path->setToolTip("打开所在目录\n" + path->text());
+        path->setData(Qt::AccessibleDescriptionRole, "单击路径或按回车打开所在目录");
+        m_ui->debuggerPaths->setItem(row, pathColumn, path);
     }
     m_ui->rescanButton->setEnabled(true);
     m_ui->copyFoldersButton->setEnabled(!installations.isEmpty());
     m_ui->copyPathsButton->setEnabled(!installations.isEmpty());
-    m_ui->debuggerStatus->setText(installations.isEmpty() ? "未检测到 msvsmon.exe。" : "勾选所需版本和架构，可复制目录或路径。");
+    m_ui->debuggerStatus->setText(installations.isEmpty() ? "未检测到 msvsmon.exe。"
+                                                         : QString("检测到 %1 个 msvsmon.exe。").arg(installations.size()));
     Diagnostics::record("debugger.scan", QString("count=%1").arg(installations.size()));
+}
+
+void RemoteDebugger::openDebuggerFolder(int row)
+{
+    const auto *path = m_ui->debuggerPaths->item(row, pathColumn);
+    if (!path) return;
+    const QDir folder = QFileInfo(path->text()).absoluteDir();
+    if (!folder.exists()) {
+        m_ui->debuggerStatus->setText("所在目录已不存在，请重新检测。");
+        return;
+    }
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(folder.absolutePath()))) {
+        m_ui->debuggerStatus->setText("无法打开所在目录。");
+        return;
+    }
+    m_ui->debuggerStatus->setText("已打开所在目录。");
 }
 
 void RemoteDebugger::copyPaths(bool directories)
@@ -314,7 +381,7 @@ void RemoteDebugger::copyPaths(bool directories)
     QSet<QString> folderNames;
     for (int row = 0; row < m_ui->debuggerPaths->rowCount(); ++row) {
         if (m_ui->debuggerPaths->item(row, 0)->checkState() != Qt::Checked) continue;
-        const QString path = m_ui->debuggerPaths->item(row, 3)->text();
+        const QString path = m_ui->debuggerPaths->item(row, pathColumn)->text();
         paths.append(path);
         if (!directories) continue;
         const QDir folder = QFileInfo(path).dir();

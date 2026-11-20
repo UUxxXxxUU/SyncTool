@@ -17,6 +17,7 @@ SOURCES += \
     src/syncworker.cpp
 
 HEADERS += \
+    src/appearance.h \
     src/appconfig.h \
     src/configmanager.h \
     src/diagnostics.h \

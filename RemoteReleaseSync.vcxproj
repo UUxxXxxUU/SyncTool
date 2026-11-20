@@ -192,6 +192,7 @@
     <ClCompile Include="src\syncplan.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\appearance.h" />
     <ClInclude Include="src\appconfig.h" />
     <ClInclude Include="src\syncplan.h" />
     <ClInclude Include="src\configmanager.h" />

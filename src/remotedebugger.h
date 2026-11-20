@@ -24,6 +24,7 @@ signals:
 private:
     void scan();
     void showPaths(const QByteArray &vswhereOutput);
+    void openDebuggerFolder(int row);
     void copyPaths(bool directories);
     void updateArchitectures();
     void download();

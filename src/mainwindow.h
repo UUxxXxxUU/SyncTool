@@ -112,6 +112,7 @@ private:
     void showNotice(const QString &title, const QString &message, bool warning, const QString &details = {});
     void updateUptime();
     void saveExclusions();
+    void showExclusionsExample();
     void handleSymbolsVerified(const QString &hostId, const QStringList &files, bool verified, quint64 revision);
     void editSyncRule(bool editExisting);
     void removeSyncRule();

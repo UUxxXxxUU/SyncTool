@@ -1,9 +1,9 @@
 ﻿#pragma execution_character_set("utf-8")
 #include "mainwindow.h"
+#include "appearance.h"
 #include "diagnostics.h"
 
 #include <QApplication>
-#include <QFont>
 #include <QIcon>
 #include <QMessageBox>
 #include <QSharedMemory>
@@ -14,9 +14,10 @@
 
 int main(int argc, char *argv[])
 {
+    Appearance::prepareApplication();
     QApplication app(argc, argv);
     app.setApplicationName("RemoteReleaseSync");
-    app.setApplicationVersion("1.1.0");
+    app.setApplicationVersion("1.1.1");
     app.setOrganizationName("LocalTools");
     app.setQuitOnLastWindowClosed(false);
 
@@ -43,9 +44,7 @@ int main(int argc, char *argv[])
     Q_UNUSED(runningMutex);
 #endif
 
-    QFont font;
-    font.setPointSize(10);
-    app.setFont(font);
+    Appearance::apply(app);
 
     Diagnostics::start();
     int result = 0;

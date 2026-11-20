@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(RemoteReleaseSync VERSION 1.1.0 LANGUAGES CXX)
+project(RemoteReleaseSync VERSION 1.1.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,6 +15,7 @@ find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Network)
 
 add_executable(RemoteReleaseSync
+    src/appearance.h
     src/appconfig.h
     src/configmanager.cpp
     src/configmanager.h
@@ -61,7 +62,7 @@ if (SYNC_BUILD_TESTS)
     find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
     add_executable(SyncToolTests
         tests/sync_tests.cpp
-        src/configmanager.cpp src/configmanager.h src/appconfig.h
+        src/configmanager.cpp src/configmanager.h src/appconfig.h src/appearance.h
         src/diagnostics.cpp src/diagnostics.h
         src/remotedebugger.cpp src/remotedebugger.h src/remotedebugger.ui
         src/syncplan.cpp src/syncplan.h

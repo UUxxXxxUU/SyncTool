@@ -1,0 +1,198 @@
+QMainWindow, QDialog, QWidget#settingsContent, QScrollArea#settingsScroll,
+QWidget#debuggerContent, QScrollArea#debuggerScroll {
+    background-color: #f1f5fa;
+    color: #172b42;
+}
+
+QMenuBar, QStatusBar {
+    background-color: #e9eff7;
+    color: #273e58;
+}
+
+QMenuBar::item {
+    padding: 5px 10px;
+}
+
+QMenuBar::item:selected, QMenu::item:selected {
+    background-color: #d8e9fc;
+    color: #15395e;
+}
+
+QStatusBar {
+    border-top: 1px solid #d9e4f1;
+}
+
+QStatusBar::item {
+    border: none;
+}
+
+QGroupBox {
+    background-color: #ffffff;
+    border: 1px solid #d4dfed;
+    border-radius: 8px;
+    margin-top: 12px;
+    padding-top: 8px;
+    color: #213852;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 5px;
+    font-weight: bold;
+}
+
+QTabWidget::pane {
+    background-color: #f8fafd;
+    border: 1px solid #d4dfed;
+    border-radius: 6px;
+}
+
+QTabBar::tab {
+    color: #405571;
+    background-color: #edf2f9;
+    border: 1px solid #d4dfed;
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+    padding: 5px 14px;
+    margin-right: 3px;
+}
+
+QTabBar::tab:selected {
+    background-color: #dcecff;
+    color: #13477b;
+    border-color: #a4c7ee;
+}
+
+QTabBar::tab:!selected:hover {
+    background-color: #e2edfa;
+}
+
+QSplitter#workspaceSplitter::handle {
+    background-color: #dce6f2;
+    border-top: 2px solid #f1f5fa;
+    border-bottom: 2px solid #f1f5fa;
+}
+
+QSplitter#workspaceSplitter::handle:hover {
+    background-color: #a4c7ee;
+}
+
+QPushButton, QToolButton#showPasswordButton {
+    background-color: #ffffff;
+    color: #233c58;
+    border: 1px solid #c4d2e3;
+    border-radius: 5px;
+    min-height: 18px;
+    padding: 4px 9px;
+}
+
+QPushButton:hover, QToolButton#showPasswordButton:hover {
+    background-color: #ecf5ff;
+    border-color: #7fa9d6;
+}
+
+QPushButton:pressed, QToolButton#showPasswordButton:checked {
+    background-color: #d9eafd;
+}
+
+QPushButton:focus, QToolButton#showPasswordButton:focus {
+    border-color: #0966bf;
+}
+
+QPushButton#syncButton, QPushButton#applyExclusionsButton, QPushButton#downloadDebuggerButton {
+    background-color: #1865b3;
+    border-color: #1865b3;
+    color: #ffffff;
+}
+
+QPushButton#syncButton:hover, QPushButton#applyExclusionsButton:hover,
+QPushButton#downloadDebuggerButton:hover {
+    background-color: #104e8d;
+}
+
+QPushButton#syncButton:focus, QPushButton#applyExclusionsButton:focus,
+QPushButton#downloadDebuggerButton:focus {
+    border-color: #081d33;
+}
+
+QPushButton:disabled, QPushButton#syncButton:disabled, QPushButton#applyExclusionsButton:disabled,
+QPushButton#downloadDebuggerButton:disabled {
+    background-color: #edf1f6;
+    color: #60728a;
+    border-color: #d6e0eb;
+}
+
+QLineEdit, QPlainTextEdit, QTextBrowser {
+    background-color: #ffffff;
+    color: #172b42;
+    border: 1px solid #c4d2e3;
+    border-radius: 5px;
+    padding: 4px 6px;
+    selection-background-color: #b8dbff;
+    selection-color: #152739;
+}
+
+QLineEdit:focus, QPlainTextEdit:focus, QTextBrowser:focus {
+    border-color: #0966bf;
+}
+
+QComboBox QLineEdit {
+    border: none;
+    padding: 2px 4px;
+}
+
+QComboBox, QSpinBox {
+    min-height: 25px;
+}
+
+QLineEdit#argumentsEdit, QPlainTextEdit#rulePreview {
+    background-color: #f1f6fd;
+}
+
+QTableView, QListView {
+    background-color: #ffffff;
+    alternate-background-color: #f5f8fc;
+    color: #172b42;
+    border: 1px solid #d4dfed;
+    border-radius: 5px;
+    selection-background-color: #d7e9fc;
+    selection-color: #152739;
+}
+
+QHeaderView::section {
+    background-color: #e9eff7;
+    color: #2a425e;
+    border: none;
+    border-right: 1px solid #d6e2ef;
+    border-bottom: 1px solid #d6e2ef;
+    padding: 5px 7px;
+    font-weight: bold;
+}
+
+QProgressBar {
+    border: 1px solid #d6e2ef;
+    border-radius: 4px;
+    background-color: #f5f8fc;
+    color: #213852;
+    text-align: center;
+}
+
+QProgressBar::chunk {
+    border-radius: 3px;
+    background-color: #cee5fc;
+}
+
+QTableView::item, QListView::item {
+    padding: 3px 5px;
+}
+
+QLabel[role="muted"] {
+    color: #435873;
+}
+
+QLabel[role="sectionTitle"] {
+    color: #213852;
+    font-weight: bold;
+}

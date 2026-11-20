@@ -73,12 +73,15 @@
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QSslSocket>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QThread>
+#include <QTextBrowser>
+#include <QTextDocument>
 #include <QTextOption>
 #include <QTimer>
 #include <QToolButton>
@@ -88,6 +91,7 @@
 #include <QVBoxLayout>
 #include <QVersionNumber>
 #include <QUuid>
+#include <QtMath>
 #include <qdatetime.h>
 
 #ifdef Q_OS_WIN
@@ -722,10 +726,32 @@ void MainWindow::setupUi()
 {
     m_ui->setupUi(this);
     setWindowTitle(QString("远程 Release 同步工具 v%1").arg(QCoreApplication::applicationVersion()));
+    setFocusProxy(m_ui->syncTabs);
     if (QScreen *screen = QGuiApplication::primaryScreen()) {
         resize(QSize(1280, 860).boundedTo(screen->availableGeometry().size() - QSize(40, 60)));
     }
-    m_ui->settingsScroll->setMinimumHeight(qMin(m_ui->settingsContent->sizeHint().height(), qMax(200, height() - 230)));
+
+    m_ui->exclusionsEdit->setFixedHeight(m_ui->exclusionsEdit->fontMetrics().lineSpacing() * 4 + 16);
+    m_ui->rulePreview->setFixedHeight(m_ui->rulePreview->fontMetrics().lineSpacing() * 2 + 20);
+    m_ui->typeList->setMaximumHeight(m_ui->typeList->fontMetrics().lineSpacing() * 7 + 12);
+    m_ui->localLayout->addStretch();
+    m_ui->settingsLayout->addStretch();
+    m_ui->localGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_ui->hostEditorGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_ui->syncTabs->setFixedHeight(m_ui->syncTabs->minimumSizeHint().height());
+
+    // The scroll area can change its content size without moving the host list.
+    auto *splitter = new QSplitter(Qt::Vertical, m_ui->centralWidget);
+    splitter->setObjectName("workspaceSplitter");
+    splitter->setChildrenCollapsible(false);
+    splitter->setHandleWidth(8);
+    m_ui->rootLayout->removeWidget(m_ui->settingsScroll);
+    m_ui->rootLayout->removeWidget(m_ui->tableGroup);
+    splitter->addWidget(m_ui->settingsScroll);
+    splitter->addWidget(m_ui->tableGroup);
+    m_ui->rootLayout->addWidget(splitter);
+    splitter->setStretchFactor(1, 1);
+    splitter->handle(1)->setToolTip("拖动调整设置区与主机列表的高度");
     m_releaseDirEdit = m_ui->releaseDirEdit;
     m_typeList = m_ui->typeList;
     m_newTypeEdit = m_ui->newTypeEdit;
@@ -752,6 +778,10 @@ void MainWindow::setupUi()
     m_ui->ruleTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_ui->ruleTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     statusBar()->addPermanentWidget(m_ui->statusControls);
+    const int workspaceHeight = height() - menuBar()->sizeHint().height() - statusBar()->sizeHint().height()
+        - m_ui->rootLayout->contentsMargins().top() - m_ui->rootLayout->contentsMargins().bottom() - splitter->handleWidth();
+    const int settingsHeight = qMin(m_ui->settingsContent->sizeHint().height() + 8, workspaceHeight * 2 / 3);
+    splitter->setSizes({settingsHeight, workspaceHeight - settingsHeight});
     addAction(m_ui->usageTipsAction);
     connect(m_ui->usageTipsAction, &QAction::triggered, this, &MainWindow::showUsageTips);
     connect(m_ui->preferencesAction, &QAction::triggered, this, &MainWindow::showPreferences);
@@ -808,6 +838,7 @@ void MainWindow::setupUi()
         handleTypeItemChanged(nullptr);
     });
     connect(m_ui->applyExclusionsButton, &QPushButton::clicked, this, &MainWindow::saveExclusions);
+    connect(m_ui->exclusionsExampleButton, &QPushButton::clicked, this, &MainWindow::showExclusionsExample);
     connect(m_ui->exclusionsEdit, &QPlainTextEdit::textChanged, m_ui->exclusionsError, &QLabel::hide);
     connect(m_typeList, &QListWidget::itemChanged, this, &MainWindow::handleTypeItemChanged);
     connect(m_ui->refreshButton, &QPushButton::clicked, this, [this]() {
@@ -902,6 +933,56 @@ void MainWindow::saveExclusions()
     }
     m_ui->exclusionsError->setText(error);
     m_ui->exclusionsError->show();
+}
+
+void MainWindow::showExclusionsExample()
+{
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName("exclusionsExampleDialog");
+    dialog->setWindowTitle("排除文件示例");
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto *layout = new QVBoxLayout(dialog);
+    auto *document = new QTextBrowser(dialog);
+    document->setObjectName("exclusionsExampleDocument");
+    document->setAccessibleName("排除规则示例图和通配符说明");
+    document->document()->setDocumentMargin(10);
+    document->setHtml(QStringLiteral(R"HTML(
+<p>按文件名匹配，忽略大小写。命中任意一条排除项的候选文件会被跳过。</p>
+<table width="100%" cellspacing="5" cellpadding="7">
+  <tr>
+    <th width="42%" bgcolor="#e9eff7">候选文件</th>
+    <td width="5%" rowspan="2" align="center">→</td>
+    <th width="24%" bgcolor="#dcecff">排除名单</th>
+    <td width="5%" rowspan="2" align="center">→</td>
+    <th width="24%" bgcolor="#e0f2eb">同步结果</th>
+  </tr>
+  <tr>
+    <td bgcolor="#f5f8fc"><b>基本同步</b><br/><tt>a.dll</tt>、<tt>core.dll</tt><br/><br/>
+      <b>附加同步规则</b><br/><tt>trace.pdb</tt>、<tt>zh.qm</tt></td>
+    <td bgcolor="#f2f7ff"><tt>a.dll</tt><br/><tt>*.pdb</tt></td>
+    <td bgcolor="#f2faf6"><tt>core.dll</tt><br/><tt>zh.qm</tt></td>
+  </tr>
+</table>
+<p>图中 <tt>a.dll</tt> 和 <tt>trace.pdb</tt> 被跳过。目标机上已有的同名文件会原样保留。</p>
+<p><b><tt>*</tt></b> 匹配零个或多个字符。<tt>log*.txt</tt> 匹配 <tt>log.txt</tt> 和 <tt>log01.txt</tt>。</p>
+<p><b><tt>?</tt></b> 匹配恰好一个字符。<tt>log?.txt</tt> 匹配 <tt>log1.txt</tt>。</p>
+)HTML"));
+    layout->addWidget(document);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    buttons->button(QDialogButtonBox::Close)->setText("关闭");
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    QScreen *screen = QGuiApplication::screenAt(frameGeometry().center());
+    const QSize available = screen ? screen->availableGeometry().size() - QSize(32, 48) : QSize(690, 520);
+    const int outerWidth = qMin(690, available.width());
+    const QMargins margins = layout->contentsMargins();
+    document->document()->setTextWidth(outerWidth - margins.left() - margins.right() - 24);
+    const int outerHeight = qCeil(document->document()->size().height()) + buttons->sizeHint().height()
+        + margins.top() + margins.bottom() + layout->spacing() + 16;
+    dialog->resize(outerWidth, qMin(outerHeight, available.height()));
+    dialog->open();
 }
 
 void MainWindow::showPreferences()
@@ -1035,7 +1116,7 @@ void MainWindow::updateRulePreview()
     m_ui->editRuleButton->setEnabled(selected);
     m_ui->removeRuleButton->setEnabled(selected);
     if (!selected) {
-        m_ui->rulePreview->setText("路径相对于两端的 Release 目录：./image 在其内部，../Lang 在其同级。双击规则可编辑。");
+        m_ui->rulePreview->setPlainText("路径相对于两端的 Release 目录。./image 在其内部，../Lang 在其同级。双击规则可编辑。");
         return;
     }
     const QString relative = m_config.syncRules.at(row).relativePath;
@@ -1043,7 +1124,7 @@ void MainWindow::updateRulePreview()
     const QString remote = SyncPlan::resolvePath(m_hostPathEdit->text(), relative);
     QString error;
     const bool valid = SyncPlan::validateRemotePath(m_hostPathEdit->text(), relative, &error);
-    m_ui->rulePreview->setText(QString("本地：%1\n远端：%2")
+    m_ui->rulePreview->setPlainText(QString("本地  %1\n远端  %2")
         .arg(local.isEmpty() ? QString("请先选择 Release 目录") : QDir::toNativeSeparators(local),
              !valid ? error : remote.isEmpty() ? QString("请选择主机，或在主机编辑区填写共享目录") : QDir::toNativeSeparators(remote)));
 }
@@ -1900,7 +1981,10 @@ void MainWindow::stopUpdateChecks()
 void MainWindow::onReleaseDirEditFinished()
 {
     if (m_isClosing) return;
-    const QString path = m_releaseDirEdit->currentText().trimmed();
+    const QString path = normalizePathForUi(m_releaseDirEdit->currentText());
+    if (path == m_config.releaseDir && (path.isEmpty() || path == m_config.releaseDirHistory.value(0))) {
+        return;
+    }
     if (!path.isEmpty()) {
         addToReleaseDirHistory(path);
     }
@@ -2595,16 +2679,10 @@ void MainWindow::updateHostRow(int row,
     }
 
     const QColor color = colorForState(state, mismatchPercent);
-    for (int column = 1; column < m_hostTable->columnCount(); ++column) {
-        QTableWidgetItem *tableItem = m_hostTable->item(row, column);
-        if (tableItem != nullptr) {
-            tableItem->setBackground(color);
-        }
-    }
-
-    if (m_hostTable->item(row, 5) != nullptr) {
-        m_hostTable->item(row, 5)->setText(statusText);
-        m_hostTable->item(row, 5)->setToolTip(statusText);
+    if (QTableWidgetItem *status = m_hostTable->item(row, 5)) {
+        status->setBackground(color);
+        status->setText(statusText);
+        status->setToolTip(statusText);
     }
     const QString hostId = m_config.hosts.value(row).id;
     if (m_hostTable->item(row, 6) != nullptr) {
@@ -2635,24 +2713,24 @@ QColor MainWindow::colorForState(int state, int mismatchPercent) const
 {
     switch (state) {
     case SyncWorker::InSync:
-        return QColor(198, 239, 206);
+        return QColor("#d8f0e2");
     case SyncWorker::Mismatch: {
         const int intensity = qBound(0, mismatchPercent, 100);
-        const int green = qMax(40, 220 - intensity);
-        const int blue = qMax(40, 220 - intensity * 2 / 3);
+        const int green = 231 - intensity / 3;
+        const int blue = 231 - intensity / 4;
         return QColor(255, green, blue);
     }
     case SyncWorker::Disconnected:
     case SyncWorker::Stopped:
-        return QColor(180, 180, 180);
+        return QColor("#e5eaf1");
     case SyncWorker::Error:
-        return QColor(255, 199, 140);
+        return QColor("#ffe3c6");
     case SyncWorker::Syncing:
-        return QColor(189, 215, 238);
+        return QColor("#cee5fc");
     case SyncWorker::Checking:
     case SyncWorker::Stopping:
     default:
-        return QColor(221, 235, 247);
+        return QColor("#e7f1fc");
     }
 }
 

@@ -14,10 +14,14 @@
       <string>远程 Release 同步工具</string>
     </property>
     <widget class="QWidget" name="centralWidget">
-      <layout class="QVBoxLayout" name="rootLayout" stretch="0,1">
+      <layout class="QVBoxLayout" name="rootLayout">
         <property name="spacing">
           <number>10</number>
         </property>
+        <property name="leftMargin"><number>14</number></property>
+        <property name="topMargin"><number>8</number></property>
+        <property name="rightMargin"><number>14</number></property>
+        <property name="bottomMargin"><number>10</number></property>
         <item>
           <widget class="QScrollArea" name="settingsScroll">
             <property name="widgetResizable">
@@ -26,10 +30,13 @@
             <property name="frameShape">
               <enum>QFrame::NoFrame</enum>
             </property>
+            <property name="verticalScrollBarPolicy">
+              <enum>Qt::ScrollBarAlwaysOn</enum>
+            </property>
             <property name="minimumSize">
               <size>
                 <width>0</width>
-                <height>200</height>
+                <height>150</height>
               </size>
             </property>
             <widget class="QWidget" name="settingsContent">
@@ -60,8 +67,9 @@
                           <item>
                             <widget class="QLabel" name="dirLabel">
                               <property name="text">
-                                <string>Release 目录：</string>
+                                <string>Release 目录</string>
                               </property>
+                              <property name="buddy"><cstring>releaseDirEdit</cstring></property>
                             </widget>
                           </item>
                           <item>
@@ -72,6 +80,10 @@
                               <property name="insertPolicy">
                                 <enum>QComboBox::NoInsert</enum>
                               </property>
+                              <property name="sizeAdjustPolicy">
+                                <enum>QComboBox::AdjustToMinimumContentsLengthWithIcon</enum>
+                              </property>
+                              <property name="minimumContentsLength"><number>12</number></property>
                             </widget>
                           </item>
                           <item>
@@ -99,18 +111,14 @@
                               <item>
                                 <widget class="QLabel" name="typeLabel">
                                   <property name="text">
-                                    <string>同步类型：</string>
+                                    <string>同步类型</string>
                                   </property>
+                                  <property name="buddy"><cstring>typeList</cstring></property>
                                 </widget>
                               </item>
                               <item>
                                 <widget class="QListWidget" name="typeList">
-                                  <property name="maximumSize">
-                                    <size>
-                                      <width>16777215</width>
-                                      <height>110</height>
-                                    </size>
-                                  </property>
+                                  <property name="alternatingRowColors"><bool>true</bool></property>
                                   <property name="selectionMode">
                                     <enum>QAbstractItemView::SingleSelection</enum>
                                   </property>
@@ -140,6 +148,10 @@
                                     </widget>
                                   </item>
                                   <item><widget class="QPushButton" name="invertTypeButton"><property name="text"><string>反选类型</string></property></widget></item>
+                                  <item><spacer name="typeButtonsSpacer">
+                                    <property name="orientation"><enum>Qt::Vertical</enum></property>
+                                    <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
+                                  </spacer></item>
                                 </layout>
                               </item>
                             </layout>
@@ -148,15 +160,27 @@
                             <attribute name="title"><string>排除文件</string></attribute>
                             <layout class="QVBoxLayout" name="exclusionsLayout">
                               <item><widget class="QLabel" name="exclusionsHelp">
-                                <property name="text"><string>按文件名或扩展名跳过。可用 * 和 ?，多项用分号或换行分隔，适用于基本同步和附加规则。</string></property>
+                                <property name="text"><string>基本同步和附加规则选出的文件都经过排除名单。多项用分号或换行分隔。</string></property>
                                 <property name="wordWrap"><bool>true</bool></property>
                               </widget></item>
-                              <item><layout class="QHBoxLayout" name="exclusionsEditor">
+                              <item><widget class="QLabel" name="wildcardHelp">
+                                <property name="role" stdset="0"><string>muted</string></property>
+                                <property name="text"><string>* 匹配零个或多个字符，? 匹配恰好一个字符。</string></property>
+                                <property name="wordWrap"><bool>true</bool></property>
+                              </widget></item>
+                              <item><layout class="QHBoxLayout" name="exclusionsEditor" stretch="1,0">
                                 <item><widget class="QPlainTextEdit" name="exclusionsEdit">
-                                  <property name="maximumHeight"><number>72</number></property>
-                                  <property name="placeholderText"><string>例如 xx.dll; xx.lib; *.pdb</string></property>
+                                  <property name="accessibleName"><string>排除名单</string></property>
+                                  <property name="placeholderText"><string>例如 a.dll; *.pdb; log?.txt</string></property>
                                 </widget></item>
-                                <item><widget class="QPushButton" name="applyExclusionsButton"><property name="text"><string>保存排除规则</string></property></widget></item>
+                                <item><layout class="QVBoxLayout" name="exclusionsButtons">
+                                  <item><widget class="QPushButton" name="applyExclusionsButton"><property name="text"><string>保存排除规则</string></property></widget></item>
+                                  <item><widget class="QPushButton" name="exclusionsExampleButton"><property name="text"><string>查看示例图</string></property></widget></item>
+                                  <item><spacer name="exclusionsButtonsSpacer">
+                                    <property name="orientation"><enum>Qt::Vertical</enum></property>
+                                    <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
+                                  </spacer></item>
+                                </layout></item>
                               </layout></item>
                               <item><widget class="QLabel" name="exclusionsError">
                                 <property name="visible"><bool>false</bool></property>
@@ -175,6 +199,8 @@
                                 <layout class="QHBoxLayout" name="ruleRow" stretch="1,0">
                                   <item>
                                     <widget class="QTableWidget" name="ruleTable">
+                                      <property name="alternatingRowColors"><bool>true</bool></property>
+                                      <property name="showGrid"><bool>false</bool></property>
                                       <property name="minimumSize">
                                         <size>
                                           <width>0</width>
@@ -239,24 +265,18 @@
                                           </property>
                                         </widget>
                                       </item>
+                                      <item><spacer name="ruleButtonsSpacer">
+                                        <property name="orientation"><enum>Qt::Vertical</enum></property>
+                                        <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
+                                      </spacer></item>
                                     </layout>
                                   </item>
                                 </layout>
                               </item>
                               <item>
-                                <widget class="QLabel" name="rulePreview">
-                                  <property name="text">
-                                    <string>路径相对于两端的 Release 目录：./image 在其内部，../Lang 在其同级。双击规则可编辑。</string>
-                                  </property>
-                                  <property name="wordWrap">
-                                    <bool>true</bool>
-                                  </property>
-                                  <property name="textFormat">
-                                    <enum>Qt::PlainText</enum>
-                                  </property>
-                                  <property name="textInteractionFlags">
-                                    <set>Qt::TextSelectableByMouse</set>
-                                  </property>
+                                <widget class="QPlainTextEdit" name="rulePreview">
+                                  <property name="accessibleName"><string>附加规则路径预览</string></property>
+                                  <property name="readOnly"><bool>true</bool></property>
                                 </widget>
                               </item>
                             </layout>
@@ -273,71 +293,54 @@
                     </property>
                     <layout class="QVBoxLayout" name="hostEditorLayout">
                       <item>
-                        <layout class="QFormLayout" name="hostForm">
+                        <layout class="QGridLayout" name="hostForm" columnstretch="0,1,0,1">
+                          <property name="horizontalSpacing"><number>12</number></property>
                           <item row="0" column="0">
-                            <widget class="QLabel" name="enabledLabel">
-                              <property name="text">
-                                <string>启用：</string>
-                              </property>
-                            </widget>
-                          </item>
-                          <item row="0" column="1">
-                            <widget class="QCheckBox" name="hostEnabledCheck">
-                              <property name="text">
-                                <string>勾选即启用同步</string>
-                              </property>
-                            </widget>
-                          </item>
-                          <item row="1" column="0">
-                            <widget class="QLabel" name="nameLabel">
-                              <property name="text">
-                                <string>显示名称：</string>
-                              </property>
-                            </widget>
-                          </item>
-                          <item row="1" column="1">
-                            <widget class="QLineEdit" name="hostNameEdit">
-                              <property name="placeholderText">
-                                <string>可选，不填时默认显示主机名</string>
-                              </property>
-                            </widget>
-                          </item>
-                          <item row="2" column="0">
                             <widget class="QLabel" name="pathLabel">
                               <property name="text">
-                                <string>共享目录：</string>
+                                <string>共享目录</string>
                               </property>
+                              <property name="buddy"><cstring>hostPathEdit</cstring></property>
                             </widget>
                           </item>
-                          <item row="2" column="1">
+                          <item row="0" column="1" colspan="3">
                             <widget class="QLineEdit" name="hostPathEdit">
                               <property name="placeholderText">
                                 <string>\\SERVER\share\Release</string>
                               </property>
                             </widget>
                           </item>
-                          <item row="3" column="0">
-                            <widget class="QLabel" name="userLabel">
-                              <property name="text">
-                                <string>账号：</string>
-                              </property>
+                          <item row="1" column="0">
+                            <widget class="QLabel" name="nameLabel">
+                              <property name="text"><string>显示名称</string></property>
+                              <property name="buddy"><cstring>hostNameEdit</cstring></property>
                             </widget>
                           </item>
-                          <item row="3" column="1">
+                          <item row="1" column="1">
+                            <widget class="QLineEdit" name="hostNameEdit">
+                              <property name="placeholderText"><string>默认使用主机名</string></property>
+                            </widget>
+                          </item>
+                          <item row="1" column="2">
+                            <widget class="QLabel" name="userLabel">
+                              <property name="text"><string>账号</string></property>
+                              <property name="buddy"><cstring>hostUserEdit</cstring></property>
+                            </widget>
+                          </item>
+                          <item row="1" column="3">
                             <widget class="QLineEdit" name="hostUserEdit">
                               <property name="placeholderText">
                                 <string>Administrator</string>
                               </property>
                             </widget>
                           </item>
-                          <item row="4" column="0">
+                          <item row="2" column="0">
                             <widget class="QLabel" name="passwordLabel">
-                              <property name="text">
-                                <string>密码：</string>
-                              </property>
+                              <property name="text"><string>密码</string></property>
+                              <property name="buddy"><cstring>hostPasswordEdit</cstring></property>
                             </widget>
                           </item>
-                          <item row="4" column="1">
+                          <item row="2" column="1">
                             <layout class="QHBoxLayout" name="passwordLayout">
                               <item><widget class="QLineEdit" name="hostPasswordEdit">
                                 <property name="echoMode"><enum>QLineEdit::Password</enum></property>
@@ -347,6 +350,11 @@
                                 <property name="checkable"><bool>true</bool></property>
                               </widget></item>
                             </layout>
+                          </item>
+                          <item row="2" column="2" colspan="2">
+                            <widget class="QCheckBox" name="hostEnabledCheck">
+                              <property name="text"><string>参与同步</string></property>
+                            </widget>
                           </item>
                         </layout>
                       </item>
@@ -416,6 +424,8 @@
             <layout class="QVBoxLayout" name="tableLayout">
               <item>
                 <widget class="QTableWidget" name="hostTable">
+                  <property name="alternatingRowColors"><bool>true</bool></property>
+                  <property name="showGrid"><bool>false</bool></property>
                   <property name="editTriggers">
                     <set>QAbstractItemView::NoEditTriggers</set>
                   </property>
@@ -564,6 +574,9 @@
   <tabstops>
     <tabstop>releaseDirEdit</tabstop>
     <tabstop>browseButton</tabstop>
+    <tabstop>refreshButton</tabstop>
+    <tabstop>syncButton</tabstop>
+    <tabstop>stopButton</tabstop>
     <tabstop>syncTabs</tabstop>
     <tabstop>typeList</tabstop>
     <tabstop>newTypeEdit</tabstop>
@@ -572,15 +585,18 @@
     <tabstop>invertTypeButton</tabstop>
     <tabstop>exclusionsEdit</tabstop>
     <tabstop>applyExclusionsButton</tabstop>
+    <tabstop>exclusionsExampleButton</tabstop>
     <tabstop>ruleTable</tabstop>
     <tabstop>addRuleButton</tabstop>
     <tabstop>editRuleButton</tabstop>
     <tabstop>removeRuleButton</tabstop>
-    <tabstop>hostNameEdit</tabstop>
+    <tabstop>rulePreview</tabstop>
     <tabstop>hostPathEdit</tabstop>
+    <tabstop>hostNameEdit</tabstop>
     <tabstop>hostUserEdit</tabstop>
     <tabstop>hostPasswordEdit</tabstop>
     <tabstop>showPasswordButton</tabstop>
+    <tabstop>hostEnabledCheck</tabstop>
     <tabstop>hostTable</tabstop>
   </tabstops>
   <resources />

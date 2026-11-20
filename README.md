@@ -138,10 +138,10 @@ Release 目录是两端路径的基准。例如本地 `D:\test sync\a\Release`�
 
 ### 远程调试与诊断
 
-- 在“工具 → 远程调试器”查看本机的 `msvsmon.exe` 版本、架构和路径。勾选后可复制路径文本，也可将可粘贴的完整架构目录放入剪贴板，在资源管理器中粘贴到目标共享。来自不同版本的同名架构目录请分批粘贴。
+- 在“工具 → 远程调试器”查看本机的 `msvsmon.exe` 版本、架构和路径。单击路径可在资源管理器中打开所在目录。“复制参数”可将启动参数复制到剪贴板。勾选后可复制路径文本，也可将完整架构目录粘贴到目标共享。来自不同版本的同名架构目录请分批粘贴。
 - 选择远程电脑的 Visual Studio 版本及 Windows 架构后，可以后台下载微软 Remote Tools。通过签名校验的安装包会保存到 Windows 的“下载”目录，完成后会收到提示。历史安装程序可从微软官方文档获取。[Microsoft Learn 远程调试文档](https://learn.microsoft.com/zh-cn/visualstudio/debugger/remote-debugging)
 - 密码输入框可切换显示。切换主机、隐藏窗口或失去窗口焦点时会恢复掩码。状态栏显示本次运行时长。
-- “排除文件”支持 `xx.dll`、`xx.lib`、`pdb`、`*.pdb` 和 `plugin?.dll`，以分号或换行分隔，按文件名忽略大小写匹配。排除规则同时应用于基本类型、附加规则、状态检查和自动扫描。“反选类型”会反转基本类型的勾选状态。
+- “排除文件”按文件名忽略大小写匹配，可用分号或换行分隔多个排除项。`*` 匹配零个或多个字符，例如 `log*.txt` 匹配 `log.txt` 和 `log01.txt`。`?` 匹配恰好一个字符，例如 `log?.txt` 匹配 `log1.txt`。排除名单同时应用于基本同步、附加规则、状态检查和自动扫描。点击“查看示例图”可查看排除后的同步结果。“反选类型”会反转基本类型的勾选状态。
 - 复制结束后，会校验本轮计划复制的 PDB。目标 PDB 仍缺失、与本地有差异或无法完成校验时，会按主机提示。处理文件占用或共享故障后，可以手动同步重试。
 - “工具 → 打开诊断目录”可查看 `Logs` 和 `CrashDumps`。日志由 spdlog 按 UTC 日期和大小滚动，默认保留 30 天，可在偏好设置设定。程序启动、修改保留设置及运行期间每小时检查一次。
 - 崩溃时由独立的 Crashpad 进程生成 SyncTool 的本地 minidump。部署包附带采集组件。手动构建的应用可用 `tools/build-crashpad.ps1` 构建它，再把输出的 `SyncToolCrashReporter.dll`、`crashpad_handler.exe` 和 `crashpad_wer.dll` 放在应用 EXE 同目录。使用匹配版本的应用 PDB 和 WinDbg 查看异常堆栈。[Crashpad 设计说明](https://chromium.googlesource.com/crashpad/crashpad/+/HEAD/doc/overview_design.md)

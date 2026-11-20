@@ -1,5 +1,6 @@
 ﻿#pragma execution_character_set("utf-8")
 #include "configmanager.h"
+#include "appearance.h"
 #include "diagnostics.h"
 #include "mainwindow.h"
 #include "remotedebugger.h"
@@ -12,6 +13,7 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -34,12 +36,16 @@
 #include <QProcess>
 #include <QSettings>
 #include <QScreen>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTextBrowser>
 #include <QThread>
 #include <QTimer>
 #include <QToolButton>
@@ -146,6 +152,8 @@ private:
     QString target() const { return root() + "/远端 target/b/Release"; }
     QString configPath() const { return root() + "/qa-config.json"; }
     QString m_originalStartup;
+    QUrl m_openedDirectory;
+    Q_INVOKABLE void recordOpenedDirectory(const QUrl &url) { m_openedDirectory = url; }
     bool m_hadStartup = false;
     const QString startupKey = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
     void stopTimers(MainWindow &window)
@@ -174,8 +182,10 @@ private:
 private slots:
     void initTestCase()
     {
-        QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");
-        QApplication::setFont(QFont("Microsoft YaHei", 10));
+        if (QGuiApplication::platformName() == "offscreen") {
+            QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");
+            QApplication::setFont(QFont("Microsoft YaHei", 10));
+        }
         QApplication::setWindowIcon(QIcon(":/icons/app_32.png"));
         QApplication::setApplicationVersion("1.0.9");
         QSettings settings(startupKey, QSettings::NativeFormat);
@@ -444,7 +454,7 @@ private slots:
         table->item(0, 0)->setCheckState(Qt::Unchecked);
         QVERIFY(!ConfigManager::load(configPath()).syncRules.first().enabled);
         main->findChild<QTableWidget *>("hostTable")->selectRow(0);
-        QVERIFY(main->findChild<QLabel *>("rulePreview")->text().contains("image"));
+        QVERIFY(main->findChild<QPlainTextEdit *>("rulePreview")->toPlainText().contains("image"));
         QTimer::singleShot(0, [&]() {
             auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
             QVERIFY(dialog);
@@ -915,9 +925,12 @@ private slots:
         QVERIFY(writeFile(source() + "/app.exe"));
         QVERIFY(writeFile(source() + "/good.dll"));
         QVERIFY(writeFile(source() + "/SKIP.dll"));
+        QVERIFY(writeFile(source() + "/SkipExtra.dll"));
         QVERIFY(writeFile(source() + "/assets/example.lib"));
         QVERIFY(writeFile(source() + "/assets/example.pdb"));
         QVERIFY(writeFile(source() + "/assets/keep.lib"));
+        QVERIFY(writeFile(source() + "/assets/log1.txt"));
+        QVERIFY(writeFile(source() + "/assets/log11.txt"));
         QVERIFY(writeFile(target() + "/assets/example.pdb", "existing symbol stays"));
         QString unc = target();
         unc = "//localhost/" + unc.left(1) + "$" + unc.mid(2);
@@ -935,10 +948,10 @@ private slots:
         apply->click();
         QVERIFY(!main->findChild<QLabel *>("exclusionsError")->isHidden());
         QVERIFY(ConfigManager::load(configPath()).excludedFilePatterns.isEmpty());
-        edit->setPlainText("skip.dll; example.lib\npdb");
+        edit->setPlainText("skip*.dll; example.lib\npdb\nlog?.txt");
         apply->click();
         QCOMPARE(ConfigManager::load(configPath()).excludedFilePatterns,
-                 QStringList({"example.lib", "pdb", "skip.dll"}));
+                 QStringList({"example.lib", "log?.txt", "pdb", "skip*.dll"}));
         main->findChild<QPushButton *>("invertTypeButton")->click();
         QCOMPARE(ConfigManager::load(configPath()).selectedFileTypes, QStringList({"dll", "pdb"}));
         main->findChild<QPushButton *>("syncButton")->click();
@@ -947,12 +960,76 @@ private slots:
         QVERIFY(QFileInfo::exists(target() + "/good.dll"));
         QVERIFY(!QFileInfo::exists(target() + "/app.exe"));
         QVERIFY(!QFileInfo::exists(target() + "/SKIP.dll"));
+        QVERIFY(!QFileInfo::exists(target() + "/SkipExtra.dll"));
         QVERIFY(!QFileInfo::exists(target() + "/assets/example.lib"));
+        QVERIFY(!QFileInfo::exists(target() + "/assets/log1.txt"));
+        QVERIFY(QFileInfo::exists(target() + "/assets/log11.txt"));
         QCOMPARE(readFile(target() + "/assets/example.pdb"), QByteArray("existing symbol stays"));
         const auto patterns = ConfigManager::load(configPath()).excludedFilePatterns;
         const auto fingerprint = SyncPlan::fingerprint(source(), {"dll", "pdb"}, config.syncRules, patterns);
         QVERIFY(writeFile(source() + "/SKIP.dll", "excluded source changed"));
         QCOMPARE(SyncPlan::fingerprint(source(), {"dll", "pdb"}, config.syncRules, patterns), fingerprint);
+    }
+
+    void tabSwitchKeepsLayoutAndShowsExclusionExample()
+    {
+        QVERIFY(writeFile(source() + "/assets/zh.qm"));
+        auto main = window({{"./assets", {"pdb", "qm"}}});
+        main->show();
+        if (QGuiApplication::platformName() == "windows") QVERIFY(QTest::qWaitForWindowExposed(main.get()));
+        QTest::qWait(50);
+        auto *tabs = main->findChild<QTabWidget *>("syncTabs");
+        auto *hosts = main->findChild<QTableWidget *>("hostTable");
+        auto *settings = main->findChild<QScrollArea *>("settingsScroll");
+        QVERIFY(tabs && hosts && settings);
+        if (!qEnvironmentVariableIsEmpty("SYNC_QA_SCALE_FACTOR")) {
+            QCOMPARE(main->devicePixelRatioF(), qEnvironmentVariable("SYNC_QA_SCALE_FACTOR").toDouble());
+        }
+        const QRect frame = main->frameGeometry();
+        const QRect hostGeometry(hosts->mapTo(main.get(), QPoint()), hosts->size());
+        const QRect tabGeometry(tabs->mapTo(main.get(), QPoint()), tabs->size());
+        const QString screenshots = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
+        if (!screenshots.isEmpty()) QVERIFY(QDir().mkpath(screenshots));
+
+        qInfo() << "Screen available" << QGuiApplication::primaryScreen()->availableGeometry().size()
+                << "logical DPI" << QGuiApplication::primaryScreen()->logicalDotsPerInch()
+                << "DPR" << main->devicePixelRatioF() << "window" << frame.size();
+        if (QGuiApplication::platformName() == "windows") {
+            const QSize available = QGuiApplication::primaryScreen()->availableGeometry().size();
+            QCOMPARE(frame.size().boundedTo(available), frame.size());
+        }
+        for (const int index : {1, 2, 0, 1}) {
+            QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier, tabs->tabBar()->tabRect(index).center());
+            QTest::qWait(20);
+            QCOMPARE(tabs->currentIndex(), index);
+            QCOMPARE(main->frameGeometry(), frame);
+            QCOMPARE(hosts->mapTo(main.get(), QPoint()), hostGeometry.topLeft());
+            QCOMPARE(hosts->width(), hostGeometry.width());
+            // The status-bar size grip can round the bottom extent to either adjacent pixel.
+            QVERIFY(qAbs(hosts->height() - hostGeometry.height()) <= 1);
+            QCOMPARE(QRect(tabs->mapTo(main.get(), QPoint()), tabs->size()), tabGeometry);
+            if (!screenshots.isEmpty())
+                QVERIFY(main->grab().save(screenshots + QString("/layout-tab-%1.png").arg(index)));
+        }
+        QCOMPARE(settings->horizontalScrollBar()->maximum(), 0);
+
+        auto *button = main->findChild<QPushButton *>("exclusionsExampleButton");
+        QVERIFY(button);
+        settings->ensureWidgetVisible(button);
+        QTest::mouseClick(button, Qt::LeftButton);
+        auto *dialog = main->findChild<QDialog *>("exclusionsExampleDialog");
+        QVERIFY(dialog && dialog->isVisible());
+        const auto *document = dialog->findChild<QTextBrowser *>("exclusionsExampleDocument");
+        QVERIFY(document);
+        QCoreApplication::processEvents();
+        if (QGuiApplication::primaryScreen()->availableGeometry().height() >= 620) {
+            QCOMPARE(document->verticalScrollBar()->maximum(), 0);
+        }
+        for (const char *text : {"基本同步", "附加同步规则", "排除名单", "同步结果", "*.pdb", "log*.txt", "log?.txt"}) {
+            QVERIFY(document->toPlainText().contains(QString::fromUtf8(text)));
+        }
+        if (!screenshots.isEmpty()) QVERIFY(dialog->grab().save(screenshots + "/exclusions-example.png"));
+        dialog->reject();
     }
 
     void incompletePdbWarningOnRealShare()
@@ -1045,6 +1122,21 @@ private slots:
         table->item(0, 0)->setCheckState(Qt::Checked);
         const QString exe = table->item(0, 3)->text();
         const QString folder = QFileInfo(exe).absolutePath();
+        {
+            QDesktopServices::setUrlHandler("file", this, "recordOpenedDirectory");
+            struct ResetUrlHandler {
+                ~ResetUrlHandler() { QDesktopServices::unsetUrlHandler("file"); }
+            } guard;
+            m_openedDirectory = QUrl();
+            QTest::mouseClick(table->viewport(), Qt::LeftButton, Qt::NoModifier,
+                              table->visualItemRect(table->item(0, 3)).center());
+            QCOMPARE(m_openedDirectory, QUrl::fromLocalFile(folder));
+            m_openedDirectory = QUrl();
+            table->setFocus();
+            QTest::keyClick(table, Qt::Key_Return);
+            QCOMPARE(m_openedDirectory, QUrl::fromLocalFile(folder));
+            QCOMPARE(table->item(0, 0)->checkState(), Qt::Checked);
+        }
         dialog.findChild<QPushButton *>("copyPathsButton")->click();
         QCOMPARE(QApplication::clipboard()->text(), exe);
         dialog.findChild<QPushButton *>("copyFoldersButton")->click();
@@ -1065,6 +1157,35 @@ private slots:
 #endif
     }
 
+    void debuggerArgumentsAreCopyable()
+    {
+        RemoteDebugger dialog;
+        dialog.show();
+        QTRY_VERIFY(dialog.findChild<QPushButton *>("rescanButton")->isEnabled());
+        const auto *edit = dialog.findChild<QLineEdit *>("argumentsEdit");
+        auto *copy = dialog.findChild<QPushButton *>("copyArgumentsButton");
+        auto *scroll = dialog.findChild<QScrollArea *>("debuggerScroll");
+        QVERIFY(edit && edit->isReadOnly() && copy && scroll);
+        scroll->ensureWidgetVisible(copy);
+        const QString expected("/noauth /anyuser /nosecuritywarn /port 4026 /timeout 999999999");
+        QCOMPARE(edit->text(), expected);
+        QTest::mouseClick(copy, Qt::LeftButton);
+        for (int retry = 0; retry < 3 && QApplication::clipboard()->text() != expected; ++retry) {
+            QTest::qWait(100);
+            QTest::mouseClick(copy, Qt::LeftButton);
+        }
+        QCOMPARE(QApplication::clipboard()->text(), expected);
+        const auto *details = dialog.findChild<QLabel *>("argumentDetails");
+        QVERIFY(details && details->text().contains("999999999 秒"));
+        QCOMPARE(scroll->horizontalScrollBar()->maximum(), 0);
+        const QString screenshots = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
+        if (!screenshots.isEmpty()) {
+            QVERIFY(QDir().mkpath(screenshots));
+            scroll->verticalScrollBar()->setValue(0);
+            QVERIFY(dialog.grab().save(screenshots + "/remote-debugger.png"));
+        }
+    }
+
     void microsoftDebuggerDownload()
     {
         if (!qEnvironmentVariableIsSet("SYNC_QA_REMOTE_DOWNLOAD")) QSKIP("Requires live Microsoft network and Windows Downloads folder");
@@ -1081,5 +1202,12 @@ private slots:
     }
 };
 
-QTEST_MAIN(SyncTests)
+int main(int argc, char *argv[])
+{
+    Appearance::prepareApplication();
+    QApplication app(argc, argv);
+    Appearance::apply(app);
+    SyncTests tests;
+    return QTest::qExec(&tests, argc, argv);
+}
 #include "sync_tests.moc"
