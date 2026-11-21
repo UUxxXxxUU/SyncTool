@@ -18,6 +18,9 @@ SOURCES += \
 
 HEADERS += \
     src/appearance.h \
+    src/roundedwindow.h \
+    src/downloadprogress.h \
+    third_party/qt-frameless-window/FramelessWindow.hpp \
     src/appconfig.h \
     src/configmanager.h \
     src/diagnostics.h \

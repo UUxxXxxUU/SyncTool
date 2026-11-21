@@ -25,7 +25,7 @@ if (!(Test-Path -LiteralPath (Join-Path $SourceDir '.git'))) {
     New-Item -ItemType Directory -Path $SourceDir -Force | Out-Null
     Invoke-BuildCommand git.exe @('-C', $SourceDir, 'init') | Out-Host
 }
-$head = & git.exe -C $SourceDir rev-parse --verify HEAD 2>$null
+$head = & git.exe -C $SourceDir rev-parse --verify --quiet HEAD 2>$null
 if ($LASTEXITCODE -ne 0) {
     Invoke-BuildCommand git.exe @('-C', $SourceDir, 'fetch', '--depth', '1',
         'https://github.com/getsentry/crashpad.git', $pin) | Out-Host

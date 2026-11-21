@@ -17,7 +17,7 @@ int main(int argc, char *argv[])
     Appearance::prepareApplication();
     QApplication app(argc, argv);
     app.setApplicationName("RemoteReleaseSync");
-    app.setApplicationVersion("1.1.1");
+    app.setApplicationVersion("1.1.2");
     app.setOrganizationName("LocalTools");
     app.setQuitOnLastWindowClosed(false);
 
@@ -27,6 +27,8 @@ int main(int argc, char *argv[])
     }
     app.setWindowIcon(appIcon);
 
+    Appearance::apply(app);
+
     const bool startupLaunch = app.arguments().contains("--startup");
 
     QSharedMemory singleInstanceGuard("LocalTools.RemoteReleaseSync.SingleInstance");
@@ -34,7 +36,7 @@ int main(int argc, char *argv[])
         if (startupLaunch) {
             return 0;
         }
-        QMessageBox::information(nullptr, "提示", "程序已经在运行。");
+        RoundedMessageBox::information(nullptr, "提示", "程序已经在运行。");
         return 0;
     }
 
@@ -43,8 +45,6 @@ int main(int argc, char *argv[])
     HANDLE runningMutex = CreateMutexW(nullptr, FALSE, L"LocalTools.RemoteReleaseSync.Running");
     Q_UNUSED(runningMutex);
 #endif
-
-    Appearance::apply(app);
 
     Diagnostics::start();
     int result = 0;

@@ -1,29 +1,46 @@
 {
-  "version": "1.1.1",
-  "notes": "排除文件页新增同步示例图与通配符说明。调整主界面布局，稳定页签切换时的显示位置，并改善 Windows 高 DPI 下的显示。",
+  "version": "1.1.2",
+  "notes": "修复主机状态表格重叠与排除文件示例乱码，统一主窗口和普通弹窗小圆角；补充远程调试器与软件更新的下载进度、文件大小和校验状态。",
   "downloadUrl": "https://github.com/UUxxXxxUU/SyncTool/releases",
-  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.1.1",
-  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.1.1/RemoteReleaseSync-1.1.1-windows-x64-setup.exe",
+  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.1.2",
+  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.1.2/RemoteReleaseSync-1.1.2-windows-x64-setup.exe",
   "sections": [
     {
-      "title": "排除文件",
+      "title": "修复问题",
       "items": [
-        "点击“查看示例图”可查看基本同步、附加规则与排除名单如何共同决定同步结果。",
-        "输入框旁说明通配符。* 匹配零个或多个字符，? 匹配恰好一个字符。"
+        "修复远程主机表格中进度条与状态列重叠的问题。",
+        "修复排除文件示例图中的中文乱码和标签显示异常。"
       ]
     },
     {
-      "title": "远程调试",
+      "title": "下载进度",
       "items": [
-        "单击 msvsmon.exe 路径可在资源管理器打开所在目录。",
-        "可复制远程调试器启动参数，界面逐项解释验证模式、端口与空闲超时。"
+        "远程调试器下载新增进度条、已下载与总大小、百分比及校验状态。",
+        "手动更新、无感更新和 SHA256 校验文件统一显示下载进度；后台更新可在主界面查看，重新打开更新窗口恢复当前进度。",
+        "服务器未提供总大小时显示动态进度条和已下载大小，校验通过后才标记完成。"
       ]
     },
     {
-      "title": "界面与显示",
+      "title": "界面与发布",
       "items": [
-        "主机列表的位置在切换三个同步页签时保持稳定。可拖动分隔条调整设置区和主机列表的高度。",
-        "更新菜单、输入栏、按钮、页签与状态表格样式。高缩放下可滚动访问设置与调试器操作。"
+        "主窗口和普通弹窗使用统一小圆角及自定义标题栏，最大化时恢复直角。",
+        "发布文档和仓库 AGENTS.md 增加跨电脑开发的 UTF-8 与中文完整性要求，上传草稿后自动回读比对正文。"
+      ]
+    },
+    {
+      "title": "已知限制",
+      "items": [
+        "圆角窗口方案不提供原生贴边分屏和系统阴影。",
+        "本次在 Windows 10 验证，Windows 11 尚未实机验收。"
+      ]
+    },
+    {
+      "title": "验证",
+      "items": [
+        "Debug / Release 构建、常规同步回归及独立的本机调试器复制用例通过。",
+        "微软 Remote Tools 真实下载、文件大小与进度、签名校验通过。",
+        "100% / 150% 缩放下的中文示例、进度列边界、更新窗口重开与圆角最大化还原通过。",
+        "去 Qt 环境变量的便携包启动及隔离安装、覆盖安装、配置保留和卸载通过；ZIP 与安装包提供 SHA256 校验文件。"
       ]
     }
   ]

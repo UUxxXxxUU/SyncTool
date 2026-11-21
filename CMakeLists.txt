@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(RemoteReleaseSync VERSION 1.1.1 LANGUAGES CXX)
+project(RemoteReleaseSync VERSION 1.1.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,9 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Network)
 
 add_executable(RemoteReleaseSync
     src/appearance.h
+    src/roundedwindow.h
+    src/downloadprogress.h
+    third_party/qt-frameless-window/FramelessWindow.hpp
     src/appconfig.h
     src/configmanager.cpp
     src/configmanager.h
@@ -78,6 +81,13 @@ if (SYNC_BUILD_TESTS)
     if (WIN32)
         target_link_libraries(SyncToolTests PRIVATE Mpr Shell32 User32 Version Wintrust Crypt32)
     endif()
-    add_test(NAME SyncToolTests COMMAND SyncToolTests)
-    set_tests_properties(SyncToolTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_test(NAME SyncToolTests COMMAND SyncToolTests
+        -o "${CMAKE_CURRENT_BINARY_DIR}/SyncToolTests-$<CONFIG>.txt,txt"
+        -o "${CMAKE_CURRENT_BINARY_DIR}/SyncToolTests-$<CONFIG>.xml,xunitxml")
+    if (WIN32)
+        # Qt 5.12 message boxes access native Windows resources when shown.
+        set_tests_properties(SyncToolTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows")
+    else()
+        set_tests_properties(SyncToolTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    endif()
 endif()

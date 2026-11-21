@@ -2,6 +2,7 @@
 #include "configmanager.h"
 #include "appearance.h"
 #include "diagnostics.h"
+#include "downloadprogress.h"
 #include "mainwindow.h"
 #include "remotedebugger.h"
 #include "syncplan.h"
@@ -30,6 +31,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QNetworkReply>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QProgressBar>
@@ -52,6 +54,7 @@
 #include <memory>
 #include <thread>
 #include <algorithm>
+#include <limits>
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -62,6 +65,15 @@
 
 namespace
 {
+class PendingDownloadReply : public QNetworkReply
+{
+public:
+    explicit PendingDownloadReply(QObject *parent) : QNetworkReply(parent) {}
+    void abort() override { close(); }
+protected:
+    qint64 readData(char *, qint64) override { return -1; }
+};
+
 bool writeFile(const QString &path, const QByteArray &data = "payload")
 {
     if (!QDir().mkpath(QFileInfo(path).absolutePath())) return false;
@@ -187,7 +199,7 @@ private slots:
             QApplication::setFont(QFont("Microsoft YaHei", 10));
         }
         QApplication::setWindowIcon(QIcon(":/icons/app_32.png"));
-        QApplication::setApplicationVersion("1.0.9");
+        QApplication::setApplicationVersion("1.1.2");
         QSettings settings(startupKey, QSettings::NativeFormat);
         m_hadStartup = settings.contains("RemoteReleaseSync");
         m_originalStartup = settings.value("RemoteReleaseSync").toString();
@@ -1186,18 +1198,151 @@ private slots:
         }
     }
 
+    void downloadProgressHandlesKnownAndUnknownSizes()
+    {
+        QProgressBar bar;
+        DownloadProgress::apply(&bar, -1);
+        QCOMPARE(bar.minimum(), 0);
+        QCOMPARE(bar.maximum(), 0);
+        QVERIFY(DownloadProgress::text(512, -1).contains(QString::fromUtf8("总大小未知")));
+        QCOMPARE(DownloadProgress::text(512, 1024), QString::fromUtf8("512 B / 1.0 KB（50%）"));
+        DownloadProgress::apply(&bar, DownloadProgress::percentage(512, 1024));
+        QCOMPARE(bar.maximum(), 100);
+        QCOMPARE(bar.value(), 50);
+        DownloadProgress::apply(&bar, -1);
+        QCOMPARE(bar.maximum(), 0);
+        DownloadProgress::apply(&bar, 100);
+        QCOMPARE(bar.maximum(), 100);
+        QCOMPARE(bar.value(), 100);
+        QCOMPARE(DownloadProgress::percentage(-1, 100), 0);
+        QCOMPARE(DownloadProgress::percentage(100, 0), -1);
+        QCOMPARE(DownloadProgress::percentage((std::numeric_limits<qint64>::max)(), (std::numeric_limits<qint64>::max)()), 100);
+        QCOMPARE(DownloadProgress::size(1024 * 1024), QString("1.0 MB"));
+    }
+
+    void updateProgressSurvivesDialogReopening()
+    {
+        auto main = window();
+        main->m_availableUpdateVersion = "1.1.3";
+        main->m_installerDownloadVersion = main->m_availableUpdateVersion;
+        main->m_installerReply = new PendingDownloadReply(main.get());
+        const QString screenshots = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
+        if (!screenshots.isEmpty()) QVERIFY(QDir().mkpath(screenshots));
+        auto inspectDialog = [&](const QString &expected, int maximum, int value, const QString &image) {
+            bool matched = false;
+            QTimer inspect;
+            inspect.setSingleShot(true);
+            connect(&inspect, &QTimer::timeout, main.get(), [&]() {
+                auto *dialog = main->m_updateDialog.data();
+                if (!dialog) return;
+                auto *bar = dialog->findChild<QProgressBar *>("progressBar");
+                auto *label = dialog->findChild<QLabel *>("statusLabel");
+                matched = bar && label && label->text() == expected && bar->maximum() == maximum
+                    && (maximum == 0 || bar->value() == value);
+                if (matched && !screenshots.isEmpty()) matched = dialog->grab().save(screenshots + image);
+                dialog->reject();
+            });
+            inspect.start(0);
+            main->showAvailableUpdate();
+            inspect.stop();
+            return matched;
+        };
+        const QString known = QString("下载安装包：%1").arg(DownloadProgress::text(1024 * 1024, 2 * 1024 * 1024));
+        main->setUpdateDialogStatus(known, 50);
+        QVERIFY(main->findChild<QLabel *>("updateNoticeLabel")->text().contains(known));
+        QVERIFY(inspectDialog(known, 100, 50, "/update-progress-known.png"));
+        QVERIFY(main->m_installerReply);
+        QVERIFY(inspectDialog(known, 100, 50, "/update-progress-reopened.png"));
+        const QString unknown = QString("下载安装包：%1").arg(DownloadProgress::text(512 * 1024, -1));
+        main->setUpdateDialogStatus(unknown, -1);
+        QVERIFY(inspectDialog(unknown, 0, 0, "/update-progress-unknown.png"));
+    }
+
+    void roundedFramesPreserveMessageButtonsAndProgressBoundaries()
+    {
+        RoundedMessageBox message;
+        auto *accept = message.addButton("确定", QMessageBox::AcceptRole);
+        auto *history = message.addButton("历史版本下载", QMessageBox::ActionRole);
+        QVERIFY(accept && history && accept != history);
+        QCOMPARE(message.buttonRole(history), QMessageBox::ActionRole);
+        message.setText("消息框详情回归");
+        message.setDetailedText("module.pdb");
+        message.show();
+        QTest::qWait(20);
+        QVERIFY(message.isVisible());
+        message.hide();
+        auto main = window();
+        main->show();
+        QTest::qWait(50);
+        QVERIFY(main->windowFlags().testFlag(Qt::FramelessWindowHint));
+        QVERIFY(main->testAttribute(Qt::WA_TranslucentBackground));
+        QVERIFY(main->findChild<QWidget *>("roundedTitleBar"));
+        auto *table = main->findChild<QTableWidget *>("hostTable");
+        QVERIFY(table && table->rowCount() == 1);
+        QWidget *cell = table->cellWidget(0, 4);
+        QVERIFY(cell);
+        auto *bar = cell->findChild<QProgressBar *>();
+        QVERIFY(bar);
+        const QRect bounds(bar->mapTo(table->viewport(), QPoint()), bar->size());
+        QVERIFY(table->visualRect(table->model()->index(0, 4)).contains(bounds));
+        QVERIFY(!bounds.intersects(table->visualItemRect(table->item(0, 5))));
+        QCOMPARE(main->grab().toImage().pixelColor(0, 0).alpha(), 0);
+        QToolButton *maximize = nullptr;
+        for (auto *button : main->findChild<QWidget *>("roundedTitleBar")->findChildren<QToolButton *>()) {
+            if (button->accessibleName() == QString("最大化")) maximize = button;
+        }
+        QVERIFY(maximize);
+        maximize->click();
+        QTRY_VERIFY(main->isMaximized());
+        QVERIFY(main->grab().toImage().pixelColor(0, 0).alpha() > 0);
+        maximize->click();
+        QTRY_VERIFY(!main->isMaximized());
+        QCOMPARE(main->grab().toImage().pixelColor(0, 0).alpha(), 0);
+    }
+
     void microsoftDebuggerDownload()
     {
         if (!qEnvironmentVariableIsSet("SYNC_QA_REMOTE_DOWNLOAD")) QSKIP("Requires live Microsoft network and Windows Downloads folder");
         RemoteDebugger dialog;
         QSignalSpy finished(&dialog, &RemoteDebugger::downloadFinished);
+        auto *bar = dialog.findChild<QProgressBar *>("downloadProgressBar");
+        auto *progress = dialog.findChild<QLabel *>("downloadProgressLabel");
+        auto *area = dialog.findChild<QWidget *>("downloadProgressArea");
+        QVERIFY(bar && progress && area && area->isHidden());
+        const QString screenshots = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
+        QTimer progressCapture;
+        bool progressCaptured = false;
+        if (!screenshots.isEmpty()) {
+            QVERIFY(QDir().mkpath(screenshots));
+            dialog.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+            connect(&progressCapture, &QTimer::timeout, &dialog, [&]() {
+                if (progress->text().contains(QString::fromUtf8("正在下载"))
+                    && (progress->text().contains(" KB") || progress->text().contains(" MB"))) {
+                    progressCaptured = dialog.grab().save(screenshots + "/debugger-download-progress.png");
+                    progressCapture.stop();
+                }
+            });
+            progressCapture.start(200);
+        }
         dialog.findChild<QPushButton *>("downloadDebuggerButton")->click();
+        QVERIFY(!area->isHidden());
+        QCOMPARE(bar->maximum(), 0);
         QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 120000);
         const auto result = finished.takeFirst();
         const QString path = result.at(0).toString();
         QVERIFY2(result.at(1).toString().isEmpty(), qPrintable(result.at(1).toString()));
         QVERIFY(QFileInfo(path).size() > 1000000);
         QCOMPARE(QFileInfo(path).absolutePath(), QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
+        QCOMPARE(bar->maximum(), 100);
+        QCOMPARE(bar->value(), 100);
+        QVERIFY(progress->text().contains(QString::fromUtf8("下载完成")));
+        QVERIFY(progress->text().contains(DownloadProgress::size(QFileInfo(path).size())));
+        if (!screenshots.isEmpty()) {
+            progressCapture.stop();
+            QVERIFY(progressCaptured);
+            QVERIFY(dialog.grab().save(screenshots + "/debugger-download-complete.png"));
+        }
         QVERIFY(QFile::remove(path));
     }
 };

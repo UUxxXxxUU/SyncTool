@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "appconfig.h"
+#include "roundedwindow.h"
 
 #include <atomic>
 #include <memory>
@@ -54,7 +55,7 @@ struct UpdateNoteSection
     QStringList items;
 };
 
-class MainWindow : public QMainWindow
+class MainWindow : public RoundedMainWindow
 {
     Q_OBJECT
 
@@ -98,6 +99,8 @@ private slots:
     void onReleaseDirEditFinished();
 
 private:
+    friend class SyncTests;
+
     struct RowWidgets
     {
         QProgressBar *progressBar = nullptr;
@@ -212,6 +215,8 @@ private:
     QString m_installerDownloadVersion;
     QUrl m_installerDownloadUrl;
     bool m_installerDownloadInteractive = false;
+    QString m_installerProgressText;
+    int m_installerProgressPercent = 0;
     bool m_installAfterDownload = false;
     QString m_readyInstallerPath;
     QString m_readyInstallerVersion;

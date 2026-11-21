@@ -1,6 +1,7 @@
 #pragma execution_character_set("utf-8")
 #include "remotedebugger.h"
 #include "diagnostics.h"
+#include "downloadprogress.h"
 #include "ui_remotedebugger.h"
 
 #include <QAction>
@@ -190,7 +191,7 @@ QString microsoftSignatureError(const QString &path)
 }
 
 RemoteDebugger::RemoteDebugger(QWidget *parent)
-    : QDialog(parent)
+    : RoundedDialog(parent)
     , m_ui(std::make_unique<Ui::RemoteDebugger>())
     , m_network(new QNetworkAccessManager(this))
     , m_timeout(new QTimer(this))
@@ -426,6 +427,11 @@ void RemoteDebugger::updateArchitectures()
 void RemoteDebugger::download()
 {
     if (m_download) return;
+    m_downloadReceived = 0;
+    m_downloadTotal = -1;
+    m_ui->downloadProgressArea->show();
+    DownloadProgress::apply(m_ui->downloadProgressBar, -1);
+    m_ui->downloadProgressLabel->setText("正在准备下载...");
     const int version = m_ui->debuggerVersion->currentData().toInt();
     const QString architecture = m_ui->debuggerArchitecture->currentData().toString();
     const QString downloads = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
@@ -457,6 +463,14 @@ void RemoteDebugger::request(const QUrl &url)
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     m_reply = m_network->get(request);
     m_reply->setReadBufferSize(1024 * 1024);
+    DownloadProgress::apply(m_ui->downloadProgressBar, -1);
+    m_ui->downloadProgressLabel->setText("正在连接下载服务器...");
+    QNetworkReply *reply = m_reply.data();
+    connect(reply, &QNetworkReply::downloadProgress, this, [this, reply](qint64 received, qint64 total) {
+        if (m_reply != reply || !m_download
+            || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) return;
+        updateDownloadProgress(received, total);
+    });
     connect(m_reply, &QNetworkReply::readyRead, this, &RemoteDebugger::readDownload);
     connect(m_reply, &QNetworkReply::finished, this, &RemoteDebugger::completeRequest);
     m_timeout->start();
@@ -472,6 +486,16 @@ void RemoteDebugger::readDownload()
     if (m_download->size() + data.size() > maxInstallerSize || m_download->write(data) != data.size()) {
         finishDownload("写入下载文件失败，或文件大小超过限制。");
     }
+}
+
+void RemoteDebugger::updateDownloadProgress(qint64 received, qint64 total)
+{
+    m_downloadReceived = qMax<qint64>(0, received);
+    m_downloadTotal = total > 0 ? total : -1;
+    DownloadProgress::apply(m_ui->downloadProgressBar, DownloadProgress::percentage(m_downloadReceived, m_downloadTotal));
+    const QString stage = m_downloadTotal > 0 && m_downloadReceived >= m_downloadTotal
+        ? QString("正在完成下载与校验：%1") : QString("正在下载：%1");
+    m_ui->downloadProgressLabel->setText(stage.arg(DownloadProgress::text(m_downloadReceived, m_downloadTotal)));
 }
 
 void RemoteDebugger::completeRequest()
@@ -494,6 +518,9 @@ void RemoteDebugger::completeRequest()
         return;
     }
     const QString temporaryPath = m_download->fileName();
+    m_downloadReceived = m_download->size();
+    DownloadProgress::apply(m_ui->downloadProgressBar, -1);
+    m_ui->downloadProgressLabel->setText(QString("正在校验安装包（%1）...").arg(DownloadProgress::size(m_downloadReceived)));
     if (!m_download->flush()) {
         finishDownload("无法完成安装包写入。");
         return;
@@ -507,6 +534,7 @@ void RemoteDebugger::completeRequest()
 void RemoteDebugger::finishDownload(const QString &reason, const QString &temporaryPath)
 {
     m_timeout->stop();
+    if (m_download) m_downloadReceived = qMax<qint64>(0, m_download->size());
     if (auto *reply = m_reply.data()) {
         disconnect(reply, nullptr, this, nullptr);
         m_reply.clear();
@@ -531,6 +559,13 @@ void RemoteDebugger::finishDownload(const QString &reason, const QString &tempor
     if (path.isEmpty() && !temporaryPath.isEmpty()) QFile::remove(temporaryPath);
     m_download.reset();
     m_ui->downloadDebuggerButton->setEnabled(true);
+    if (error.isEmpty() && !path.isEmpty()) {
+        DownloadProgress::apply(m_ui->downloadProgressBar, 100);
+        m_ui->downloadProgressLabel->setText(QString("下载完成：%1").arg(DownloadProgress::size(QFileInfo(path).size())));
+    } else {
+        DownloadProgress::apply(m_ui->downloadProgressBar, 0);
+        m_ui->downloadProgressLabel->setText(QString("下载失败（已下载 %1）").arg(DownloadProgress::size(m_downloadReceived)));
+    }
     m_ui->debuggerStatus->setText(error.isEmpty() ? "下载完成：" + path : error);
     Diagnostics::record(error.isEmpty() ? "debugger.download_done" : "debugger.download_failed", {}, !error.isEmpty());
     emit downloadFinished(path, error);

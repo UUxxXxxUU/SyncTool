@@ -1,6 +1,7 @@
 <RCC>
     <qresource prefix="/">
         <file>interface.qss</file>
+        <file>exclusions-example.html</file>
         <file>icons/app_16.png</file>
         <file>icons/app_24.png</file>
         <file>icons/app_32.png</file>

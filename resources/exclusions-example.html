@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"/></head>
+<body>
+<p>按文件名匹配，忽略大小写。命中任意一条排除项的候选文件会被跳过。</p>
+<table width="100%" cellspacing="5" cellpadding="7">
+  <tr>
+    <th width="42%" bgcolor="#e9eff7">候选文件</th>
+    <td width="5%" rowspan="2" align="center">&rarr;</td>
+    <th width="24%" bgcolor="#dcecff">排除名单</th>
+    <td width="5%" rowspan="2" align="center">&rarr;</td>
+    <th width="24%" bgcolor="#e0f2eb">同步结果</th>
+  </tr>
+  <tr>
+    <td bgcolor="#f5f8fc"><b>基本同步</b><br/><tt>a.dll</tt>、<tt>core.dll</tt><br/><br/>
+      <b>附加同步规则</b><br/><tt>trace.pdb</tt>、<tt>zh.qm</tt></td>
+    <td bgcolor="#f2f7ff"><tt>a.dll</tt><br/><tt>*.pdb</tt></td>
+    <td bgcolor="#f2faf6"><tt>core.dll</tt><br/><tt>zh.qm</tt></td>
+  </tr>
+</table>
+<p>图中 <tt>a.dll</tt> 和 <tt>trace.pdb</tt> 被跳过。目标机上已有的同名文件会原样保留。</p>
+<p><b><tt>*</tt></b> 匹配零个或多个字符。<tt>log*.txt</tt> 匹配 <tt>log.txt</tt> 和 <tt>log01.txt</tt>。</p>
+<p><b><tt>?</tt></b> 匹配恰好一个字符。<tt>log?.txt</tt> 匹配 <tt>log1.txt</tt>。</p>
+</body>
+</html>

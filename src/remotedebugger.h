@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QDialog>
+#include "roundedwindow.h"
 #include <QPointer>
 #include <QUrl>
 #include <memory>
@@ -11,7 +11,7 @@ class QTemporaryFile;
 class QTimer;
 namespace Ui { class RemoteDebugger; }
 
-class RemoteDebugger : public QDialog
+class RemoteDebugger : public RoundedDialog
 {
     Q_OBJECT
 public:
@@ -30,6 +30,7 @@ private:
     void download();
     void request(const QUrl &url);
     void readDownload();
+    void updateDownloadProgress(qint64 received, qint64 total);
     void completeRequest();
     void finishDownload(const QString &error, const QString &temporaryPath = {});
 
@@ -39,5 +40,7 @@ private:
     std::unique_ptr<QTemporaryFile> m_download;
     QTimer *m_timeout = nullptr;
     QString m_downloadName;
+    qint64 m_downloadReceived = 0;
+    qint64 m_downloadTotal = -1;
     int m_redirects = 0;
 };

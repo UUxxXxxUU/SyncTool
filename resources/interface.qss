@@ -4,6 +4,30 @@ QWidget#debuggerContent, QScrollArea#debuggerScroll {
     color: #172b42;
 }
 
+QWidget[roundedWindow="true"] {
+    background-color: transparent;
+    border: none;
+}
+
+QWidget#roundedTitleBar {
+    background-color: transparent;
+}
+
+QWidget#roundedTitleBar QToolButton {
+    border: none;
+    border-radius: 4px;
+    padding: 0;
+    min-height: 0;
+}
+
+QWidget#roundedTitleBar QToolButton:hover {
+    background-color: #d8e9fc;
+}
+
+QWidget#roundedTitleBar QToolButton#roundedCloseButton:hover {
+    background-color: #f7c7ca;
+}
+
 QMenuBar, QStatusBar {
     background-color: #e9eff7;
     color: #273e58;

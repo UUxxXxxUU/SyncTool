@@ -268,7 +268,7 @@ foreach ($resourceDir in $resourceDirs) {
     Copy-Item -LiteralPath $resourceDir -Destination $destinationDir -Recurse
 }
 $vendoredDir = Join-Path $buildDir 'third_party'
-New-Item -ItemType Directory -Path $vendoredDir | Out-Null
+New-Item -ItemType Directory -Path $vendoredDir -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party\spdlog') -Destination $vendoredDir -Recurse
 
 $previousPath = $env:PATH
@@ -320,6 +320,7 @@ if ($RuntimeNoticesDir) {
 }
 Get-ChildItem -LiteralPath (Join-Path $crashpadBuildDir 'LICENSES') | Copy-Item -Destination $licensesDir
 Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party\spdlog\LICENSE') -Destination (Join-Path $licensesDir 'spdlog.txt')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party\qt-frameless-window\LICENSE') -Destination (Join-Path $licensesDir 'qt-frameless-window.txt')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'third_party\spdlog\include\spdlog\fmt\bundled\fmt.license.rst') -Destination (Join-Path $licensesDir 'fmt.license.rst')
 if ($RuntimeNoticesDir) {
     $runtimeNotices = Join-Path (Split-Path -Parent $RuntimeNoticesDir) 'THIRD-PARTY-NOTICES.md'
@@ -373,9 +374,16 @@ if ($Upload) {
             foreach ($item in @($section.items)) { $notesText += "- $item`n" }
         }
     }
-    [System.IO.File]::WriteAllText($notesPath, $notesText + "`nCommit: $commit`n", [System.Text.UTF8Encoding]::new($false))
+    $notesText += "`nCommit: $commit`n"
+    [System.IO.File]::WriteAllText($notesPath, $notesText, [System.Text.UTF8Encoding]::new($false))
     Write-Host "Creating draft release $tag in $repository..."
     Invoke-Native $ghPath @('release', 'create', $tag, $zipPath, $checksumPath, $installerPath, $installerChecksumPath, '--repo', $repository,
         '--target', $commit, '--title', "RemoteReleaseSync $version", '--notes-file', $notesPath, '--draft') | Out-Host
+    $publishedNotes = ((Invoke-Native $ghPath @('release', 'view', $tag, '--repo', $repository, '--json', 'body')) -join "`n") | ConvertFrom-Json
+    $lineBreaks = [char[]]@([char]13, [char]10)
+    if ($publishedNotes.body -isnot [string] -or
+        $publishedNotes.body.Replace("`r`n", "`n").TrimEnd($lineBreaks) -cne $notesText.Replace("`r`n", "`n").TrimEnd($lineBreaks)) {
+        throw "Draft release notes differ from the UTF-8 source. Do not publish. Verify $notesPath and repair the draft before continuing."
+    }
     Write-Host 'Draft uploaded. Verify the package on a Windows machine without Qt before publishing it on GitHub.'
 }

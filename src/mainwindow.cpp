@@ -3,6 +3,7 @@
 
 #include "configmanager.h"
 #include "diagnostics.h"
+#include "downloadprogress.h"
 #include "remotedebugger.h"
 #include "syncworker.h"
 #include "synccompletiontoast.h"
@@ -481,14 +482,10 @@ QString describeDownloadError(QNetworkReply *reply)
     return QString("下载失败，请检查网络后重试。\n%1").arg(reply->errorString());
 }
 
-QString formatMegabytes(qint64 bytes)
-{
-    return QString::number(static_cast<double>(bytes) / (1024.0 * 1024.0), 'f', 1) + " MB";
-}
 }
 
 MainWindow::MainWindow(QWidget *parent, const QString &configPath, bool manageSystemStartup)
-    : QMainWindow(parent)
+    : RoundedMainWindow(parent)
     , m_ui(new Ui::MainWindow)
     , m_configPath(configPath.isEmpty() ? ConfigManager::defaultConfigPath() : configPath)
     , m_manageSystemStartup(manageSystemStartup)
@@ -765,9 +762,11 @@ void MainWindow::setupUi()
     m_hostTable = m_ui->hostTable;
     m_releaseDirEdit->lineEdit()->setPlaceholderText("选择或输入本地 Release 目录路径...");
     m_ui->stopButton->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
-    for (int column : {0, 1, 3, 4, 5}) {
+    for (int column : {0, 1, 3, 5}) {
         m_hostTable->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
     }
+    m_hostTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Fixed);
+    m_hostTable->setColumnWidth(4, qMax(140, m_hostTable->fontMetrics().horizontalAdvance("100%") + 40));
     m_hostTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     m_hostTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
     m_hostTable->horizontalHeader()->setSectionResizeMode(7, QHeaderView::Fixed);
@@ -804,7 +803,7 @@ void MainWindow::setupUi()
         QString error;
         if (!applyPreferences(preferences, &error)) {
             updateSettingsSummary();
-            QMessageBox::warning(this, "保存失败", error);
+            RoundedMessageBox::warning(this, "保存失败", error);
         }
     });
     connect(m_ui->addRuleButton, &QPushButton::clicked, this, [this]() { editSyncRule(false); });
@@ -884,7 +883,7 @@ void MainWindow::showNotice(const QString &title, const QString &message, bool w
 
     QWidget *parent = m_remoteDebugger && m_remoteDebugger->isActiveWindow()
         ? static_cast<QWidget *>(m_remoteDebugger) : this;
-    auto *notice = new QMessageBox(warning ? QMessageBox::Warning : QMessageBox::Information,
+    auto *notice = new RoundedMessageBox(warning ? QMessageBox::Warning : QMessageBox::Information,
                                    title, message, QMessageBox::Ok, parent);
     notice->setTextFormat(Qt::PlainText);
     if (!details.isEmpty()) notice->setDetailedText(details);
@@ -935,7 +934,17 @@ void MainWindow::saveExclusions()
 
 void MainWindow::showExclusionsExample()
 {
-    auto *dialog = new QDialog(this);
+    QFile example(":/exclusions-example.html");
+    if (!example.open(QIODevice::ReadOnly)) {
+        showNotice("排除文件示例", "无法加载排除文件示例。", true);
+        return;
+    }
+    const QByteArray html = example.readAll();
+    if (example.error() != QFile::NoError) {
+        showNotice("排除文件示例", "无法读取排除文件示例。", true);
+        return;
+    }
+    auto *dialog = new RoundedDialog(this);
     dialog->setObjectName("exclusionsExampleDialog");
     dialog->setWindowTitle("排除文件示例");
     dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -945,27 +954,7 @@ void MainWindow::showExclusionsExample()
     document->setObjectName("exclusionsExampleDocument");
     document->setAccessibleName("排除规则示例图和通配符说明");
     document->document()->setDocumentMargin(10);
-    document->setHtml(QStringLiteral(R"HTML(
-<p>按文件名匹配，忽略大小写。命中任意一条排除项的候选文件会被跳过。</p>
-<table width="100%" cellspacing="5" cellpadding="7">
-  <tr>
-    <th width="42%" bgcolor="#e9eff7">候选文件</th>
-    <td width="5%" rowspan="2" align="center">→</td>
-    <th width="24%" bgcolor="#dcecff">排除名单</th>
-    <td width="5%" rowspan="2" align="center">→</td>
-    <th width="24%" bgcolor="#e0f2eb">同步结果</th>
-  </tr>
-  <tr>
-    <td bgcolor="#f5f8fc"><b>基本同步</b><br/><tt>a.dll</tt>、<tt>core.dll</tt><br/><br/>
-      <b>附加同步规则</b><br/><tt>trace.pdb</tt>、<tt>zh.qm</tt></td>
-    <td bgcolor="#f2f7ff"><tt>a.dll</tt><br/><tt>*.pdb</tt></td>
-    <td bgcolor="#f2faf6"><tt>core.dll</tt><br/><tt>zh.qm</tt></td>
-  </tr>
-</table>
-<p>图中 <tt>a.dll</tt> 和 <tt>trace.pdb</tt> 被跳过。目标机上已有的同名文件会原样保留。</p>
-<p><b><tt>*</tt></b> 匹配零个或多个字符。<tt>log*.txt</tt> 匹配 <tt>log.txt</tt> 和 <tt>log01.txt</tt>。</p>
-<p><b><tt>?</tt></b> 匹配恰好一个字符。<tt>log?.txt</tt> 匹配 <tt>log1.txt</tt>。</p>
-)HTML"));
+    document->setHtml(QString::fromUtf8(html));
     layout->addWidget(document);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
     buttons->button(QDialogButtonBox::Close)->setText("关闭");
@@ -986,7 +975,7 @@ void MainWindow::showPreferences()
         m_preferencesDialog->activateWindow();
         return;
     }
-    QDialog dialog(this);
+    RoundedDialog dialog(this);
     Ui::PreferencesDialog ui;
     ui.setupUi(&dialog);
     ui.buttonBox->button(QDialogButtonBox::Save)->setText("保存");
@@ -1141,7 +1130,7 @@ void MainWindow::editSyncRule(bool editExisting)
 {
     const int row = m_ui->ruleTable->currentRow();
     if (editExisting && (row < 0 || row >= m_config.syncRules.size())) return;
-    QDialog dialog(this);
+    RoundedDialog dialog(this);
     Ui::SyncRuleDialog ui;
     ui.setupUi(&dialog);
     dialog.setWindowFlags(dialog.windowFlags() & ~Qt::WindowContextHelpButtonHint);
@@ -1169,7 +1158,7 @@ void MainWindow::editSyncRule(bool editExisting)
     auto browse = [&](bool file) {
         const QString base = m_releaseDirEdit->currentText().trimmed();
         if (base.isEmpty()) {
-            QMessageBox::information(&dialog, "选择 Release 目录", "请先在主窗口设置本地 Release 目录。");
+            RoundedMessageBox::information(&dialog, "选择 Release 目录", "请先在主窗口设置本地 Release 目录。");
             return;
         }
         const QString selected = file ? QFileDialog::getOpenFileName(&dialog, "选择规则文件", base)
@@ -1186,20 +1175,20 @@ void MainWindow::editSyncRule(bool editExisting)
         const QStringList types = text.isEmpty() ? QStringList() : text.split(QRegularExpression("[;,，；\\s]+"), QString::SkipEmptyParts);
         if (!SyncPlan::normalizeRelativePath(ui.pathEdit->text(), &result.relativePath, &error)
             || !SyncPlan::normalizeTypes(types, &result.fileTypes, &error)) {
-            QMessageBox::warning(&dialog, "规则无效", error);
+            RoundedMessageBox::warning(&dialog, "规则无效", error);
             return;
         }
         result.enabled = ui.enabledCheck->isChecked();
         if (result.enabled) {
             for (const HostEntry &host : m_config.hosts) {
                 if (!SyncPlan::validateRemotePath(host.sharePath, result.relativePath, &error)) {
-                    QMessageBox::warning(&dialog, "规则无效", QString("主机 %1：%2").arg(host.name, error));
+                    RoundedMessageBox::warning(&dialog, "规则无效", QString("主机 %1：%2").arg(host.name, error));
                     return;
                 }
             }
             QVector<SyncPlan::Scope> scopes;
             if (!SyncPlan::build(m_releaseDirEdit->currentText(), QString(), {}, {result}, &scopes, &error)) {
-                QMessageBox::warning(&dialog, "规则无效", error);
+                RoundedMessageBox::warning(&dialog, "规则无效", error);
                 return;
             }
         }
@@ -1233,7 +1222,7 @@ void MainWindow::showUsageTips()
         return;
     }
 
-    auto *dialog = new QDialog(this);
+    auto *dialog = new RoundedDialog(this);
     m_usageTipsDialog = dialog;
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowTitle("使用技巧 · 快捷操作与隐藏功能");
@@ -1434,7 +1423,7 @@ void MainWindow::finishUpdateCheck(const QString &errorMessage)
         return;
     }
     if (!errorMessage.isEmpty()) {
-        QMessageBox::warning(this, "检查更新失败", errorMessage);
+        RoundedMessageBox::warning(this, "检查更新失败", errorMessage);
     } else if (m_availableUpdateVersion.isEmpty()) {
         showUpdateHistoryLink(QString("当前已是最新版本（%1）。").arg(QCoreApplication::applicationVersion()));
     } else {
@@ -1456,7 +1445,7 @@ void MainWindow::showAvailableUpdate()
     m_updateDialogOpen = true;
     updateUpdateIndicators();
 
-    QDialog dialog(this);
+    RoundedDialog dialog(this);
     Ui::UpdateDialog ui;
     ui.setupUi(&dialog);
     dialog.setWindowFlags(dialog.windowFlags() & ~Qt::WindowContextHelpButtonHint);
@@ -1521,9 +1510,11 @@ void MainWindow::showAvailableUpdate()
     m_updateDialogStatus = statusLabel;
     m_updateDialogInstallButton = installButton;
     if (isReadyInstallerCurrent()) {
-        setUpdateDialogStatus("安装包已下载并通过校验，点击“更新”立即安装，程序会自动重启。", 100);
+        setUpdateDialogStatus(QString("安装包已下载并通过校验（%1），点击“更新”立即安装，程序会自动重启。")
+                                  .arg(DownloadProgress::size(QFileInfo(m_readyInstallerPath).size())), 100);
     } else if (m_installerReply != nullptr) {
-        setUpdateDialogStatus("正在后台下载安装包...");
+        setUpdateDialogStatus(m_installerProgressText.isEmpty() ? QString("正在连接下载服务器...") : m_installerProgressText,
+                              m_installerProgressText.isEmpty() ? -1 : m_installerProgressPercent);
     } else {
         setUpdateDialogStatus("点击“更新”下载安装包，安装完成后程序会自动重启。", 0);
     }
@@ -1568,13 +1559,13 @@ void MainWindow::openUpdateUrl(const QUrl &url)
 {
     const QUrl target = url.isValid() ? url : QUrl(QString::fromLatin1(kReleaseListUrl));
     if (!QDesktopServices::openUrl(target)) {
-        QMessageBox::warning(this, "打开页面失败", QString("请在浏览器中访问：\n%1").arg(target.toString()));
+        RoundedMessageBox::warning(this, "打开页面失败", QString("请在浏览器中访问：\n%1").arg(target.toString()));
     }
 }
 
 void MainWindow::showUpdateHistoryLink(const QString &message)
 {
-    QMessageBox box(this);
+    RoundedMessageBox box(this);
     box.setWindowTitle("检查更新");
     box.setIcon(QMessageBox::Information);
     box.setText(message);
@@ -1594,12 +1585,13 @@ bool MainWindow::isReadyInstallerCurrent() const
 
 void MainWindow::setUpdateDialogStatus(const QString &text, int percent)
 {
+    m_installerProgressText = text;
+    m_installerProgressPercent = percent < 0 ? -1 : qBound(0, percent, 100);
     if (m_updateDialogStatus != nullptr) {
         m_updateDialogStatus->setText(text);
     }
-    if (percent >= 0 && m_updateDialogProgress != nullptr) {
-        m_updateDialogProgress->setValue(qBound(0, percent, 100));
-    }
+    DownloadProgress::apply(m_updateDialogProgress.data(), m_installerProgressPercent);
+    updateUpdateIndicators();
 }
 
 void MainWindow::startInstallerDownload(bool interactive)
@@ -1630,7 +1622,6 @@ void MainWindow::startInstallerDownload(bool interactive)
     if (m_updateNetworkManager == nullptr) {
         m_updateNetworkManager = new QNetworkAccessManager(this);
     }
-    setUpdateDialogStatus("正在获取安装包校验信息...", 0);
     requestInstallerChecksum();
 }
 
@@ -1639,6 +1630,13 @@ void MainWindow::requestInstallerChecksum()
     const QUrl checksumUrl(m_installerDownloadUrl.toString() + ".sha256");
     QNetworkReply *reply = m_updateNetworkManager->get(makeDownloadRequest(checksumUrl));
     m_installerReply = reply;
+    setUpdateDialogStatus("正在连接校验文件服务器...", -1);
+    connect(reply, &QNetworkReply::downloadProgress, this, [this, reply](qint64 received, qint64 total) {
+        if (m_installerReply != reply || m_isClosing
+            || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) return;
+        setUpdateDialogStatus(QString("获取校验文件：%1").arg(DownloadProgress::text(received, total)),
+                              DownloadProgress::percentage(received, total));
+    });
 
     QTimer *timeout = new QTimer(reply);
     timeout->setSingleShot(true);
@@ -1692,7 +1690,7 @@ void MainWindow::requestInstallerFile(const QString &expectedSha256)
 
     QNetworkReply *reply = m_updateNetworkManager->get(makeDownloadRequest(m_installerDownloadUrl));
     m_installerReply = reply;
-    setUpdateDialogStatus("正在下载安装包...", 0);
+    setUpdateDialogStatus("正在连接安装包下载服务器...", -1);
 
     // 只在长时间没有收到数据时中止，避免大文件在慢速网络下被误判超时。
     QTimer *stallTimer = new QTimer(reply);
@@ -1704,14 +1702,13 @@ void MainWindow::requestInstallerFile(const QString &expectedSha256)
     connect(reply, &QNetworkReply::readyRead, this, [this, reply]() {
         appendInstallerChunk(reply);
     });
-    connect(reply, &QNetworkReply::downloadProgress, this, [this, stallTimer](qint64 received, qint64 total) {
+    connect(reply, &QNetworkReply::downloadProgress, this, [this, reply, stallTimer](qint64 received, qint64 total) {
+        if (m_installerReply != reply || m_isClosing) return;
         stallTimer->start(kInstallerStallTimeoutMs);
-        if (total > 0) {
-            setUpdateDialogStatus(QString("正在下载安装包 %1 / %2").arg(formatMegabytes(received), formatMegabytes(total)),
-                                  static_cast<int>(received * 100 / total));
-        } else {
-            setUpdateDialogStatus(QString("正在下载安装包 %1").arg(formatMegabytes(received)));
-        }
+        if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) return;
+        const QString stage = total > 0 && received >= total
+            ? QString("正在完成下载与校验：%1") : QString("下载安装包：%1");
+        setUpdateDialogStatus(stage.arg(DownloadProgress::text(received, total)), DownloadProgress::percentage(received, total));
     });
     connect(reply, &QNetworkReply::finished, this, [this, reply, stallTimer, expectedSha256]() {
         stallTimer->stop();
@@ -1731,6 +1728,7 @@ void MainWindow::requestInstallerFile(const QString &expectedSha256)
             return;
         }
 
+        setUpdateDialogStatus(QString("正在校验安装包（%1）...").arg(DownloadProgress::size(m_installerFile->size())), -1);
         const QString partPath = m_installerFile->fileName();
         const bool flushed = m_installerFile->flush();
         m_installerFile->close();
@@ -1811,6 +1809,9 @@ void MainWindow::abortInstallerDownload()
     m_installerDownloadUrl = QUrl();
     m_installerDownloadInteractive = false;
     m_installAfterDownload = false;
+    m_installerProgressText.clear();
+    m_installerProgressPercent = 0;
+    updateUpdateIndicators();
 }
 
 void MainWindow::failInstallerDownload(const QString &errorMessage)
@@ -1827,7 +1828,7 @@ void MainWindow::failInstallerDownload(const QString &errorMessage)
             m_updateDialogInstallButton->setText("重试");
         }
     } else if (interactive) {
-        QMessageBox::warning(this, "下载更新失败", errorMessage);
+        RoundedMessageBox::warning(this, "下载更新失败", errorMessage);
     } else {
         statusBar()->showMessage(QString("后台下载更新失败，将在下次检查时重试：%1").arg(errorMessage.section('\n', 0, 0)), 8000);
     }
@@ -1844,12 +1845,14 @@ void MainWindow::finishInstallerDownload()
         return;
     }
     if (installNow && m_updateDialog != nullptr) {
-        setUpdateDialogStatus("安装包已下载并通过校验，正在准备安装...", 100);
+        setUpdateDialogStatus(QString("安装包已下载并通过校验（%1），正在准备安装...")
+                                  .arg(DownloadProgress::size(QFileInfo(m_readyInstallerPath).size())), 100);
         m_updateDialog->done(kInstallDialogResult);
         return;
     }
+    setUpdateDialogStatus(QString("安装包已下载并通过校验（%1），点击“更新”立即安装，程序会自动重启。")
+                              .arg(DownloadProgress::size(QFileInfo(m_readyInstallerPath).size())), 100);
     if (m_updateDialog != nullptr) {
-        setUpdateDialogStatus("安装包已下载并通过校验，点击“更新”立即安装，程序会自动重启。", 100);
         if (m_updateDialogInstallButton != nullptr) {
             m_updateDialogInstallButton->setEnabled(true);
             m_updateDialogInstallButton->setText("更新");
@@ -1908,13 +1911,13 @@ void MainWindow::installUpdateNow()
         return;
     }
     if (hasRunningWorkers()
-        && QMessageBox::question(this, "安装更新", "当前有同步任务正在运行，安装更新会停止这些任务。是否继续？")
+        && RoundedMessageBox::question(this, "安装更新", "当前有同步任务正在运行，安装更新会停止这些任务。是否继续？")
                != QMessageBox::Yes) {
         return;
     }
     QString error;
     if (!launchInstaller(false, &error)) {
-        QMessageBox::warning(this, "安装更新失败", QString("%1\n可前往发布页手动下载安装包。").arg(error));
+        RoundedMessageBox::warning(this, "安装更新失败", QString("%1\n可前往发布页手动下载安装包。").arg(error));
         return;
     }
     m_isInstallingUpdate = true;
@@ -1952,9 +1955,11 @@ void MainWindow::updateUpdateIndicators()
         ? QString("发现版本 %1，点击查看更新说明并选择是否更新。").arg(m_availableUpdateVersion)
         : QString("手动检查软件更新；程序每 2 小时自动检查一次。"));
     m_ui->updateNoticeLabel->setVisible(hasUpdate && !m_isClosing);
+    const bool downloading = m_installerReply != nullptr && !m_installerProgressText.isEmpty();
+    const QString notice = downloading ? m_installerProgressText : QString("发现新版本 %1").arg(m_availableUpdateVersion);
     m_ui->updateNoticeLabel->setText(hasUpdate
-        ? QString("<a href=\"update\">发现新版本 %1</a>").arg(m_availableUpdateVersion.toHtmlEscaped()) : QString());
-    m_ui->updateNoticeLabel->setToolTip(m_ui->checkUpdatesAction->toolTip());
+        ? QString("<a href=\"update\">%1</a>").arg(notice.toHtmlEscaped()) : QString());
+    m_ui->updateNoticeLabel->setToolTip(downloading ? m_installerProgressText : m_ui->checkUpdatesAction->toolTip());
 }
 
 void MainWindow::stopUpdateChecks()
@@ -2131,6 +2136,7 @@ void MainWindow::refreshHostTable()
         auto *pathItem = new QTableWidgetItem(normalizePathForUi(host.sharePath));
         auto *userItem = new QTableWidgetItem(host.username);
         auto *statusItem = new QTableWidgetItem("未检测");
+        statusItem->setTextAlignment(Qt::AlignCenter);
         auto *detailItem = new QTableWidgetItem("等待状态刷新");
         pathItem->setToolTip(sharePathTooltip(pathItem->text()));
         m_hostTable->setItem(row, 1, nameItem);
@@ -2140,12 +2146,18 @@ void MainWindow::refreshHostTable()
         m_hostTable->setItem(row, 6, detailItem);
         m_hostTable->setItem(row, 7, new QTableWidgetItem());
 
-        auto *progressBar = new QProgressBar(m_hostTable);
+        auto *progressCell = new QWidget(m_hostTable);
+        auto *progressLayout = new QHBoxLayout(progressCell);
+        progressLayout->setContentsMargins(6, 2, 6, 2);
+        auto *progressBar = new QProgressBar(progressCell);
+        progressBar->setMinimumWidth(0);
+        progressBar->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
         progressBar->setRange(0, 100);
         progressBar->setValue(0);
         progressBar->setFormat("%p%");
         m_copyPreview->watch(progressBar, host.id);
-        m_hostTable->setCellWidget(row, 4, progressBar);
+        progressLayout->addWidget(progressBar);
+        m_hostTable->setCellWidget(row, 4, progressCell);
 
         RowWidgets widgets;
         widgets.progressBar = progressBar;
@@ -2223,7 +2235,7 @@ void MainWindow::addOrUpdateHost(bool updateExisting)
 {
     const QString sharePath = normalizePathForUi(m_hostPathEdit->text());
     if (sharePath.isEmpty()) {
-        QMessageBox::warning(this, "提示", "请填写共享目录路径。");
+        RoundedMessageBox::warning(this, "提示", "请填写共享目录路径。");
         return;
     }
 
@@ -2237,7 +2249,7 @@ void MainWindow::addOrUpdateHost(bool updateExisting)
     const int row = m_hostTable->currentRow();
     if (updateExisting) {
         if (row < 0 || row >= m_config.hosts.size()) {
-            QMessageBox::warning(this, "提示", "请在表格中选择一台主机后再更新。");
+            RoundedMessageBox::warning(this, "提示", "请在表格中选择一台主机后再更新。");
             return;
         }
         const HostEntry &previousHost = m_config.hosts.at(row);
@@ -2270,12 +2282,12 @@ void MainWindow::removeSelectedHost()
 {
     const int row = m_hostTable->currentRow();
     if (row < 0 || row >= m_config.hosts.size()) {
-        QMessageBox::warning(this, "提示", "请先选择需要删除的主机。");
+        RoundedMessageBox::warning(this, "提示", "请先选择需要删除的主机。");
         return;
     }
 
     if (m_runningThreads.contains(m_config.hosts.at(row).id)) {
-        QMessageBox::warning(this, "提示", "该主机正在执行任务，请等待完成后再删除。");
+        RoundedMessageBox::warning(this, "提示", "该主机正在执行任务，请等待完成后再删除。");
         return;
     }
 
@@ -2322,11 +2334,11 @@ void MainWindow::saveConfiguration()
     QString error;
     if (!ConfigManager::save(m_configPath, m_config, &error)) {
         Diagnostics::record("config.write_failed", {}, true);
-        QMessageBox::warning(this, "保存失败", QString("配置文件写入失败：%1").arg(error));
+        RoundedMessageBox::warning(this, "保存失败", QString("配置文件写入失败：%1").arg(error));
         return;
     }
     if (m_manageSystemStartup && !setSystemAutoStartEnabled(m_config.startWithSystem, &error)) {
-        QMessageBox::warning(this, "自启设置失败", QString("开机自启设置写入失败：%1").arg(error));
+        RoundedMessageBox::warning(this, "自启设置失败", QString("开机自启设置写入失败：%1").arg(error));
         return;
     }
 
@@ -2372,7 +2384,7 @@ void MainWindow::addFileType()
 {
     const QString type = normalizedExtension(m_newTypeEdit->text());
     if (type.isEmpty()) {
-        QMessageBox::warning(this, "提示", "请输入有效的扩展名，如 dll。");
+        RoundedMessageBox::warning(this, "提示", "请输入有效的扩展名，如 dll。");
         return;
     }
 
@@ -2396,7 +2408,7 @@ void MainWindow::removeSelectedFileType()
 {
     QListWidgetItem *item = m_typeList->currentItem();
     if (item == nullptr) {
-        QMessageBox::warning(this, "提示", "请先选择一个扩展名。");
+        RoundedMessageBox::warning(this, "提示", "请先选择一个扩展名。");
         return;
     }
 
@@ -2610,7 +2622,7 @@ void MainWindow::handleWorkerCopySucceeded(const QString &hostId, const QDateTim
             m_syncCompletionToast->enqueue(hostDisplayText(host));
             QString error;
             if (!ConfigManager::save(m_configPath, m_config, &error)) {
-                QMessageBox::warning(this, "同步时间保存失败", QString("文件同步已完成，但同步时间无法写入配置：%1").arg(error));
+                RoundedMessageBox::warning(this, "同步时间保存失败", QString("文件同步已完成，但同步时间无法写入配置：%1").arg(error));
             }
             return;
         }
