@@ -14,6 +14,32 @@
       <property name="topMargin"><number>0</number></property>
       <property name="rightMargin"><number>0</number></property>
       <property name="bottomMargin"><number>0</number></property>
+      <item><widget class="QGroupBox" name="remoteGroup">
+       <property name="title"><string>远程主机安装与开机自启</string></property>
+       <layout class="QVBoxLayout" name="remoteLayout">
+        <item><widget class="QComboBox" name="remoteHostCombo">
+         <property name="accessibleName"><string>需要管理的远程主机</string></property>
+         <property name="sizeAdjustPolicy"><enum>QComboBox::AdjustToMinimumContentsLengthWithIcon</enum></property>
+         <property name="minimumContentsLength"><number>24</number></property>
+        </widget></item>
+        <item><widget class="QLabel" name="remoteHint">
+         <property name="wordWrap"><bool>true</bool></property>
+         <property name="text"><string>使用已保存主机的账号密码，工具版本和架构在下方选择。安装成功后默认开启自启并启动调试器；无需用户登录。关闭自启不会停止当前运行的调试器。无认证模式仅限可信局域网。</string></property>
+        </widget></item>
+        <item><layout class="QHBoxLayout" name="remoteButtons">
+         <item><widget class="QPushButton" name="installRemoteButton"><property name="text"><string>远程静默安装</string></property></widget></item>
+         <item><widget class="QPushButton" name="browseRemoteInstallerButton"><property name="text"><string>选择安装包…</string></property></widget></item>
+         <item><widget class="QPushButton" name="enableRemoteStartupButton"><property name="text"><string>开启自启</string></property></widget></item>
+         <item><widget class="QPushButton" name="disableRemoteStartupButton"><property name="text"><string>关闭自启</string></property></widget></item>
+        </layout></item>
+        <item><widget class="QLabel" name="remoteStatus">
+         <property name="wordWrap"><bool>true</bool></property>
+         <property name="textFormat"><enum>Qt::PlainText</enum></property>
+         <property name="textInteractionFlags"><set>Qt::TextSelectableByMouse</set></property>
+         <property name="text"><string>请先在主窗口保存主机配置，再选择目标主机操作。</string></property>
+        </widget></item>
+       </layout>
+      </widget></item>
       <item><widget class="QGroupBox" name="installedGroup">
        <property name="title"><string>本机已安装的 msvsmon.exe</string></property>
        <layout class="QVBoxLayout" name="installedLayout">

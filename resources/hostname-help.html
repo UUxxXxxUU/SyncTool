@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>如何查看主机名</title></head>
+<body style="font-family:'Microsoft YaHei',sans-serif;color:#243247;">
+<h2>在需要连接的那台远程电脑上查看</h2>
+<p><b>Windows 10 / Windows 11：</b>打开“开始 → 设置 → 系统 → 关于”，找到“设备名称”。例如 <b>DESKTOP-U6HE6A0</b>。</p>
+<p><b>通用方法：</b>按 <b>Win + R</b>，输入 <b>cmd</b> 并回车；再输入 <b>hostname</b> 并回车，下一行就是主机名。</p>
+<p><img src=":/hostname-guide.png" width="660" height="403" alt="Windows 10、11 设备名称和 hostname 命令操作示意图"></p>
+<p>图中名称仅为示例，图片为操作示意图。请填写远程电脑实际显示的名称。</p>
+<h3>填入共享目录</h3>
+<p>主机名只是共享路径的一部分。例如主机名为 <b>DESKTOP-U6HE6A0</b>，共享名为 <b>share</b>，则路径可以是：</p>
+<p><code>\\DESKTOP-U6HE6A0\share\LHJ\Release</code></p>
+<p>“显示名称”用于备注，可填写“实验室电脑”等；连接使用“共享目录”中的主机名或 IP。扫描到设备后，仍需填写远程电脑真实存在的共享名和目录。</p>
+<p>如果主机名无法连接，可尝试该电脑的 IP 地址，并检查是否处于同一网络、共享权限及防火墙设置。</p>
+</body></html>

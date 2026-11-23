@@ -7,9 +7,11 @@
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QCloseEvent>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
+#include <QFileDialog>
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QHeaderView>
@@ -20,7 +22,11 @@
 #include <QMimeData>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+#include <QNetworkProxy>
+#include <QSslSocket>
+#include <QSslError>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QSet>
 #include <QSettings>
@@ -28,6 +34,7 @@
 #include <QTemporaryFile>
 #include <QTimer>
 #include <QtEndian>
+#include <QUuid>
 #include <algorithm>
 
 #ifdef Q_OS_WIN
@@ -247,10 +254,26 @@ RemoteDebugger::RemoteDebugger(QWidget *parent)
     updateArchitectures();
     connect(m_ui->debuggerVersion, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &RemoteDebugger::updateArchitectures);
+    connect(m_ui->debuggerVersion, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &RemoteDebugger::updateRemoteActions);
+    connect(m_ui->debuggerArchitecture, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &RemoteDebugger::updateRemoteActions);
     connect(m_ui->copyFoldersButton, &QPushButton::clicked, this, [this]() { copyPaths(true); });
     connect(m_ui->copyPathsButton, &QPushButton::clicked, this, [this]() { copyPaths(false); });
     connect(m_ui->rescanButton, &QPushButton::clicked, this, &RemoteDebugger::scan);
     connect(m_ui->downloadDebuggerButton, &QPushButton::clicked, this, &RemoteDebugger::download);
+    connect(m_ui->installRemoteButton, &QPushButton::clicked, this, [this]() { deploy("install"); });
+    connect(m_ui->browseRemoteInstallerButton, &QPushButton::clicked, this, [this]() {
+        const QString path = QFileDialog::getOpenFileName(this, "选择已下载的微软 Remote Tools 安装包",
+            QStandardPaths::writableLocation(QStandardPaths::DownloadLocation), "Remote Tools (*.exe)");
+        if (path.isEmpty()) return;
+        const QString name = QString("VS_RemoteTools_%1_%2").arg(m_ui->debuggerVersion->currentText().section(' ', -1),
+            m_ui->debuggerArchitecture->currentText());
+        QSettings().setValue("remoteTools/installers/" + name, path);
+        setRemoteStatus("已选择安装包：" + QDir::toNativeSeparators(path) + "\n安装时会检查微软签名、工具版本及目标架构。");
+        Diagnostics::event("remote.installer_selected", {{"path", path}, {"major", m_ui->debuggerVersion->currentData().toInt()}, {"arch", m_ui->debuggerArchitecture->currentText()}});
+    });
+    connect(m_ui->enableRemoteStartupButton, &QPushButton::clicked, this, [this]() { deploy("enable"); });
+    connect(m_ui->disableRemoteStartupButton, &QPushButton::clicked, this, [this]() { deploy("disable"); });
+    connect(m_ui->remoteHostCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &RemoteDebugger::updateRemoteActions);
     connect(m_ui->officialPageButton, &QPushButton::clicked, this, [this]() {
         QDesktopServices::openUrl(QUrl("https://learn.microsoft.com/zh-cn/visualstudio/debugger/remote-debugging"));
     });
@@ -258,6 +281,233 @@ RemoteDebugger::RemoteDebugger(QWidget *parent)
     m_timeout->setInterval(60000);
     connect(m_timeout, &QTimer::timeout, this, [this]() { finishDownload("下载超时，请重试。"); });
     scan();
+    updateRemoteActions();
+}
+
+void RemoteDebugger::setHosts(const QVector<HostEntry> &hosts, int selectedRow)
+{
+    if (isDeploying()) return;
+    const int previous = m_ui->remoteHostCombo->currentIndex();
+    const QString previousId = previous >= 0 && previous < m_hosts.size() ? m_hosts.at(previous).id : QString();
+    m_hosts = hosts;
+    m_ui->remoteHostCombo->clear();
+    int selection = selectedRow;
+    for (int row = 0; row < m_hosts.size(); ++row) {
+        const auto &host = m_hosts.at(row);
+        m_ui->remoteHostCombo->addItem(QString("%1 — %2").arg(host.name, host.sharePath));
+        m_ui->remoteHostCombo->setItemData(row, host.sharePath, Qt::ToolTipRole);
+        if ((selection < 0 || selection >= hosts.size()) && host.id == previousId) selection = row;
+    }
+    if (selection >= 0 && selection < m_hosts.size()) m_ui->remoteHostCombo->setCurrentIndex(selection);
+    else if (!previousId.isEmpty()) m_ui->remoteHostCombo->setCurrentIndex(-1);
+    updateRemoteActions();
+}
+
+bool RemoteDebugger::isDeploying() const
+{
+    return m_deployment != nullptr;
+}
+
+void RemoteDebugger::closeEvent(QCloseEvent *event)
+{
+    if (isDeploying()) {
+        setRemoteStatus("远程操作正在进行，请等待结果后再关闭窗口。");
+        event->ignore();
+        return;
+    }
+    RoundedDialog::closeEvent(event);
+}
+
+void RemoteDebugger::reject()
+{
+    if (isDeploying()) {
+        setRemoteStatus("远程操作正在进行，请等待结果后再关闭窗口。");
+        return;
+    }
+    RoundedDialog::reject();
+}
+
+void RemoteDebugger::updateRemoteActions()
+{
+    m_ui->remoteGroup->setTitle(QString("远程主机安装与开机自启 — %1 / %2")
+        .arg(m_ui->debuggerVersion->currentText(), m_ui->debuggerArchitecture->currentText()));
+    const bool busy = isDeploying() || bool(m_download);
+    const int row = m_ui->remoteHostCombo->currentIndex();
+    const bool available = row >= 0 && row < m_hosts.size() && !busy;
+    m_ui->remoteHostCombo->setEnabled(!busy);
+    m_ui->installRemoteButton->setEnabled(available);
+    m_ui->browseRemoteInstallerButton->setEnabled(!busy);
+    m_ui->enableRemoteStartupButton->setEnabled(available);
+    m_ui->disableRemoteStartupButton->setEnabled(available);
+    m_ui->debuggerVersion->setEnabled(!busy);
+    m_ui->debuggerArchitecture->setEnabled(!busy);
+    m_ui->downloadDebuggerButton->setEnabled(!busy);
+}
+
+void RemoteDebugger::deploy(const QString &operation)
+{
+    if (isDeploying() || m_download) return;
+    m_deploymentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_deploymentElapsed.start();
+    Diagnostics::event("remote.request", {{"run", m_deploymentId}, {"action", Diagnostics::lastUserAction()}, {"operation", operation}});
+    const int row = m_ui->remoteHostCombo->currentIndex();
+    if (row < 0 || row >= m_hosts.size()) {
+        setRemoteStatus("请先保存并选择需要管理的主机。");
+        return;
+    }
+    const HostEntry host = m_hosts.at(row);
+    Diagnostics::rememberSecret(host.password);
+    Diagnostics::event("remote.target", {{"run", m_deploymentId}, {"host", host.id}, {"share", host.sharePath}, {"user", host.username},
+        {"major", m_ui->debuggerVersion->currentData().toInt()}, {"arch", m_ui->debuggerArchitecture->currentText()}});
+    QString share = host.sharePath;
+    share.replace('/', '\\');
+    const QString server = share.startsWith("\\\\") ? share.section('\\', 2, 2) : QString();
+    static const QRegularExpression serverPattern("^[A-Za-z0-9_.-]{1,253}$");
+    if (!serverPattern.match(server).hasMatch() || server.contains("..") || host.username.trimmed().isEmpty()) {
+        setRemoteStatus("主机配置无效：请保存有效的共享路径，以及用于远程管理的管理员账号密码。");
+        return;
+    }
+    QString installer;
+    if (operation == "install") {
+        const QString name = QString("VS_RemoteTools_%1_%2").arg(m_ui->debuggerVersion->currentText().section(' ', -1),
+            m_ui->debuggerArchitecture->currentText());
+        installer = QSettings().value("remoteTools/installers/" + name).toString();
+        if (!QFileInfo(installer).isFile()) {
+            installer.clear();
+            const QString downloadsPath = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+            if (!downloadsPath.isEmpty()) {
+                const auto files = QDir(downloadsPath).entryInfoList({name + "*.exe"}, QDir::Files, QDir::Time);
+                if (!files.isEmpty()) installer = files.first().absoluteFilePath();
+            }
+        }
+        if (installer.isEmpty()) installer = QFileDialog::getOpenFileName(this, "选择已下载的微软 Remote Tools 安装包",
+            QStandardPaths::writableLocation(QStandardPaths::DownloadLocation), "Remote Tools (*.exe)");
+        if (installer.isEmpty()) { setRemoteStatus("已取消选择安装包，本次未执行远程安装。"); return; }
+        const QFileInfo info(installer);
+        if (!info.isFile() || info.size() <= 0 || info.size() > maxInstallerSize) {
+            setRemoteStatus("安装包不存在、为空或超过 256 MiB，请重新选择。");
+            return;
+        }
+    }
+    const int currentRow = m_ui->remoteHostCombo->currentIndex();
+    if (currentRow < 0 || currentRow >= m_hosts.size() || m_hosts.at(currentRow).id != host.id
+        || m_hosts.at(currentRow).sharePath != host.sharePath || m_hosts.at(currentRow).username != host.username
+        || m_hosts.at(currentRow).password != host.password) {
+        setRemoteStatus("主机配置在选择安装包期间发生变化，请核对目标主机后重新操作。");
+        return;
+    }
+    QFile script(":/remote-deploy.ps1"), bootstrap(":/remote-bootstrap.ps1");
+    if (!script.open(QIODevice::ReadOnly) || !bootstrap.open(QIODevice::ReadOnly)) {
+        setRemoteStatus("无法读取远程部署资源。");
+        return;
+    }
+    m_deploymentScript = std::make_unique<QTemporaryFile>(QDir::tempPath() + "/rrs-deploy-XXXXXX.ps1");
+    QByteArray scriptBytes = script.readAll();
+    if (!scriptBytes.startsWith(QByteArray::fromHex("efbbbf"))) scriptBytes.prepend(QByteArray::fromHex("efbbbf"));
+    if (!m_deploymentScript->open() || m_deploymentScript->write(scriptBytes) != scriptBytes.size()
+        || !m_deploymentScript->flush()) {
+        setRemoteStatus("无法准备远程部署脚本。");
+        m_deploymentScript.reset();
+        return;
+    }
+    m_deploymentScript->close();
+    QJsonObject request;
+    request.insert("operation", operation);
+    request.insert("run", m_deploymentId);
+    request.insert("server", server);
+    request.insert("username", host.username.trimmed());
+    request.insert("password", host.password);
+    request.insert("major", m_ui->debuggerVersion->currentData().toInt());
+    request.insert("architecture", m_ui->debuggerArchitecture->currentText());
+    request.insert("installer", QDir::toNativeSeparators(installer));
+    request.insert("bootstrap", QString::fromLatin1(bootstrap.readAll().toBase64()));
+    const QByteArray payload = QJsonDocument(request).toJson(QJsonDocument::Compact);
+    const QString powershell = qEnvironmentVariable("SystemRoot") + "/System32/WindowsPowerShell/v1.0/powershell.exe";
+    if (!QFileInfo(powershell).isFile()) {
+        setRemoteStatus("未找到 Windows PowerShell，无法执行远程操作。");
+        m_deploymentScript.reset();
+        return;
+    }
+    m_deploymentOutput.clear();
+    m_deploymentErrors.clear();
+    m_deploymentHasResult = false;
+    m_deployment = new QProcess(this);
+    m_deployment->setProcessChannelMode(QProcess::SeparateChannels);
+    connect(m_deployment, &QProcess::started, this, [this, payload]() {
+        // 凭据仅通过子进程标准输入传递，避免出现在命令行、脚本文件或诊断日志中。
+        if (m_deployment->write(payload) != payload.size()) {
+            setRemoteStatus("无法向部署进程传递操作参数。");
+            m_deployment->kill();
+        }
+        m_deployment->closeWriteChannel();
+    });
+    connect(m_deployment, &QProcess::readyReadStandardOutput, this, &RemoteDebugger::readDeploymentOutput);
+    connect(m_deployment, &QProcess::readyReadStandardError, this, [this]() {
+        m_deploymentErrors += m_deployment->readAllStandardError();
+        m_deploymentErrors = m_deploymentErrors.right(8192);
+    });
+    connect(m_deployment, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this](int, QProcess::ExitStatus) {
+        finishDeployment();
+    });
+    connect(m_deployment, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) finishDeployment();
+    });
+    setRemoteStatus("正在连接主机 " + server + "…");
+    Diagnostics::event("remote.process_start", {{"run", m_deploymentId}, {"server", server}, {"installer", installer}, {"operation", operation}});
+    updateRemoteActions();
+    m_deployment->start(powershell, {"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+        QDir::toNativeSeparators(m_deploymentScript->fileName())});
+}
+
+void RemoteDebugger::readDeploymentOutput()
+{
+    if (!m_deployment) return;
+    m_deploymentOutput += m_deployment->readAllStandardOutput();
+    if (m_deploymentOutput.size() > 1024 * 1024) { m_deploymentOutput.clear(); return; }
+    for (int newline = m_deploymentOutput.indexOf('\n'); newline >= 0; newline = m_deploymentOutput.indexOf('\n')) {
+        const QByteArray line = m_deploymentOutput.left(newline).trimmed();
+        m_deploymentOutput.remove(0, newline + 1);
+        const auto object = QJsonDocument::fromJson(line).object();
+        const QString type = object.value("type").toString();
+        if (type == "result" && object.value("success").isBool() && object.value("message").isString()
+            && !object.value("message").toString().trimmed().isEmpty()) {
+            m_deploymentHasResult = true;
+            Diagnostics::event("remote.result", {{"run", m_deploymentId}, {"response", object}, {"elapsed_ms", double(m_deploymentElapsed.elapsed())}}, !object.value("success").toBool());
+            setRemoteStatus(object.value("message").toString());
+        } else if (type == "progress") {
+            Diagnostics::event("remote.stage", {{"run", m_deploymentId}, {"response", object}, {"elapsed_ms", double(m_deploymentElapsed.elapsed())}});
+            if (m_deploymentHasResult) setRemoteStatus(m_ui->remoteStatus->text() + '\n' + object.value("message").toString());
+            else setRemoteStatus(object.value("message").toString());
+        }
+    }
+}
+
+void RemoteDebugger::finishDeployment()
+{
+    if (!m_deployment) return;
+    readDeploymentOutput();
+    if (!m_deploymentHasResult) {
+        const QString detail = QString::fromUtf8(m_deploymentErrors).trimmed();
+        setRemoteStatus("部署进程未返回有效结果：" + (detail.isEmpty() ? m_deployment->errorString() : detail)
+            + "\n远程任务可能仍在执行，请检查主机状态后再操作。");
+    } else if (m_deployment->exitStatus() != QProcess::NormalExit || m_deployment->exitCode() != 0) {
+        setRemoteStatus(m_ui->remoteStatus->text() + "\n部署进程异常退出，临时任务或文件可能未完成清理。");
+    }
+    Diagnostics::event("remote.process_finished", {{"run", m_deploymentId}, {"exit", m_deployment->exitCode()},
+        {"exit_status", int(m_deployment->exitStatus())}, {"process_error", m_deployment->exitStatus() == QProcess::NormalExit && m_deployment->exitCode() == 0 ? QString() : m_deployment->errorString()},
+        {"stderr", QString::fromUtf8(m_deploymentErrors)}, {"has_result", m_deploymentHasResult}, {"elapsed_ms", double(m_deploymentElapsed.elapsed())}}, !m_deploymentHasResult || m_deployment->exitCode() != 0);
+    m_deployment->deleteLater();
+    m_deployment = nullptr;
+    m_deploymentScript.reset();
+    m_deploymentErrors.clear();
+    updateRemoteActions();
+    emit deploymentFinished();
+}
+
+void RemoteDebugger::setRemoteStatus(const QString &message)
+{
+    m_ui->remoteStatus->setText(message);
+    Diagnostics::event("remote.status", {{"run", m_deploymentId}, {"message", message}});
 }
 
 RemoteDebugger::~RemoteDebugger()
@@ -265,11 +515,18 @@ RemoteDebugger::~RemoteDebugger()
     for (QObject *child : findChildren<QObject *>()) {
         disconnect(child, nullptr, this, nullptr);
     }
+    for (QProcess *process : findChildren<QProcess *>()) {
+        if (process == m_deployment || process->state() == QProcess::NotRunning) continue;
+        Diagnostics::event("debugger.discovery_cancel", {{"pid", double(process->processId())}});
+        process->kill();
+        if (!process->waitForFinished(1000)) Diagnostics::event("debugger.discovery_cancel_timeout", {}, true);
+    }
     if (m_reply) m_reply->abort();
 }
 
 void RemoteDebugger::scan()
 {
+    Diagnostics::event("debugger.discovery_start", {{"action", Diagnostics::lastUserAction()}});
     m_ui->rescanButton->setEnabled(false);
     QString vswhere;
     for (const QString &root : programRoots()) {
@@ -426,7 +683,9 @@ void RemoteDebugger::updateArchitectures()
 
 void RemoteDebugger::download()
 {
-    if (m_download) return;
+    if (m_download || isDeploying()) return;
+    m_downloadId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_downloadElapsed.start();
     m_downloadReceived = 0;
     m_downloadTotal = -1;
     m_ui->downloadProgressArea->show();
@@ -446,15 +705,19 @@ void RemoteDebugger::download()
         finishDownload("无法在“下载”文件夹写入文件：" + m_download->errorString());
         return;
     }
+    updateRemoteActions();
     m_redirects = 0;
     m_ui->downloadDebuggerButton->setEnabled(false);
     m_ui->debuggerStatus->setText("正在后台下载微软 Remote Tools…");
-    Diagnostics::record("debugger.download_start", QString("vs=%1 arch=%2").arg(version).arg(architecture));
+    Diagnostics::event("debugger.download_start", {{"run", m_downloadId}, {"action", Diagnostics::lastUserAction()}, {"vs", version}, {"arch", architecture},
+        {"directory", downloads}, {"ssl_supported", QSslSocket::supportsSsl()}, {"ssl_build", QSslSocket::sslLibraryBuildVersionString()},
+        {"ssl_runtime", QSslSocket::sslLibraryVersionString()}, {"proxy_type", int(m_network->proxy().type())}});
     request(QUrl(QString("https://aka.ms/vs/%1/release/RemoteTools.%2ret.chs.exe").arg(version).arg(architecture)));
 }
 
 void RemoteDebugger::request(const QUrl &url)
 {
+    Diagnostics::event("debugger.download_request", {{"run", m_downloadId}, {"url", url.toString()}, {"redirect", m_redirects}});
     if (!microsoftUrl(url) || m_redirects > 5) {
         finishDownload("下载跳转未通过微软来源检查。");
         return;
@@ -466,6 +729,12 @@ void RemoteDebugger::request(const QUrl &url)
     DownloadProgress::apply(m_ui->downloadProgressBar, -1);
     m_ui->downloadProgressLabel->setText("正在连接下载服务器...");
     QNetworkReply *reply = m_reply.data();
+    connect(reply, &QNetworkReply::sslErrors, this, [this, reply](const QList<QSslError> &errors) {
+        QStringList messages;
+        for (const auto &error : errors) messages.append(error.errorString());
+        Diagnostics::event("debugger.download_tls_errors", {{"run", m_downloadId}, {"url", reply->url().toString()},
+            {"errors", QJsonArray::fromStringList(messages)}}, true);
+    });
     connect(reply, &QNetworkReply::downloadProgress, this, [this, reply](qint64 received, qint64 total) {
         if (m_reply != reply || !m_download
             || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) return;
@@ -501,6 +770,8 @@ void RemoteDebugger::updateDownloadProgress(qint64 received, qint64 total)
 void RemoteDebugger::completeRequest()
 {
     if (!m_reply) return;
+    Diagnostics::event("debugger.download_response", {{"run", m_downloadId}, {"url", m_reply->url().toString()},
+        {"http", m_reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()}, {"network_error", int(m_reply->error())}, {"error", m_reply->error() == QNetworkReply::NoError ? QString() : m_reply->errorString()}});
     readDownload();
     if (!m_reply) return;
     auto *reply = m_reply.data();
@@ -560,6 +831,7 @@ void RemoteDebugger::finishDownload(const QString &reason, const QString &tempor
     m_download.reset();
     m_ui->downloadDebuggerButton->setEnabled(true);
     if (error.isEmpty() && !path.isEmpty()) {
+        QSettings().setValue("remoteTools/installers/" + m_downloadName, path);
         DownloadProgress::apply(m_ui->downloadProgressBar, 100);
         m_ui->downloadProgressLabel->setText(QString("下载完成：%1").arg(DownloadProgress::size(QFileInfo(path).size())));
     } else {
@@ -567,6 +839,8 @@ void RemoteDebugger::finishDownload(const QString &reason, const QString &tempor
         m_ui->downloadProgressLabel->setText(QString("下载失败（已下载 %1）").arg(DownloadProgress::size(m_downloadReceived)));
     }
     m_ui->debuggerStatus->setText(error.isEmpty() ? "下载完成：" + path : error);
-    Diagnostics::record(error.isEmpty() ? "debugger.download_done" : "debugger.download_failed", {}, !error.isEmpty());
+    Diagnostics::event(error.isEmpty() ? "debugger.download_done" : "debugger.download_failed", {{"run", m_downloadId}, {"path", path}, {"error", error},
+        {"bytes", double(m_downloadReceived)}, {"elapsed_ms", double(m_downloadElapsed.isValid() ? m_downloadElapsed.elapsed() : 0)}}, !error.isEmpty());
+    updateRemoteActions();
     emit downloadFinished(path, error);
 }

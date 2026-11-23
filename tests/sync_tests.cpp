@@ -5,6 +5,7 @@
 #include "downloadprogress.h"
 #include "mainwindow.h"
 #include "remotedebugger.h"
+#include "networkhostdialog.h"
 #include "syncplan.h"
 #include "syncworker.h"
 #include "synccompletiontoast.h"
@@ -23,6 +24,7 @@
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
@@ -32,9 +34,12 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QNetworkReply>
+#include <QNetworkProxy>
+#include <QNetworkProxyFactory>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QProgressBar>
+#include <QRegularExpression>
 #include <QProcess>
 #include <QSettings>
 #include <QScreen>
@@ -47,6 +52,7 @@
 #include <QTabBar>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QVBoxLayout>
 #include <QTextBrowser>
 #include <QThread>
 #include <QTimer>
@@ -55,6 +61,7 @@
 #include <thread>
 #include <algorithm>
 #include <limits>
+#include <vector>
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -207,7 +214,7 @@ private slots:
             QApplication::setFont(QFont("Microsoft YaHei", 10));
         }
         QApplication::setWindowIcon(QIcon(":/icons/app_32.png"));
-        QApplication::setApplicationVersion("1.1.3");
+        QApplication::setApplicationVersion("1.1.4");
         QSettings settings(startupKey, QSettings::NativeFormat);
         m_hadStartup = settings.contains("RemoteReleaseSync");
         m_originalStartup = settings.value("RemoteReleaseSync").toString();
@@ -218,9 +225,20 @@ private slots:
         QVERIFY(m_temp->isValid());
         QVERIFY(QDir().mkpath(source()));
         QVERIFY(QDir().mkpath(target()));
+        if (!qEnvironmentVariableIsEmpty("SYNC_QA_LOG_DIR")
+            && QByteArray(QTest::currentTestFunction()) != "detailedInteractionLogsRedactSecretsAndKeepThreadOrder")
+            Diagnostics::start(m_temp->path() + "/diagnostics");
     }
     void cleanup()
     {
+        Diagnostics::stop();
+        const QString logRoot = qEnvironmentVariable("SYNC_QA_LOG_DIR");
+        if (!logRoot.isEmpty()) {
+            const QString destination = logRoot + '/' + QString::fromLatin1(QTest::currentTestFunction());
+            QVERIFY(QDir().mkpath(destination));
+            const QDir source(m_temp->path() + "/diagnostics/Logs");
+            for (const QString &name : source.entryList({"*.log"}, QDir::Files)) QVERIFY(QFile::copy(source.filePath(name), destination + '/' + name));
+        }
         QSettings settings(startupKey, QSettings::NativeFormat);
         QCOMPARE(settings.contains("RemoteReleaseSync"), m_hadStartup);
         QCOMPARE(settings.value("RemoteReleaseSync").toString(), m_originalStartup);
@@ -925,12 +943,19 @@ private slots:
         QVERIFY(password && reveal && uptime);
         password->setText("qa-only-credential");
         QCOMPARE(password->echoMode(), QLineEdit::Password);
-        reveal->click();
+        QVERIFY(!reveal->isCheckable());
+        QVERIFY(!reveal->icon().isNull());
+        QTest::mousePress(reveal, Qt::LeftButton);
         QCOMPARE(password->echoMode(), QLineEdit::Normal);
         QCOMPARE(password->displayText(), QString("qa-only-credential"));
+        QTest::mouseRelease(reveal, Qt::LeftButton);
+        QCOMPARE(password->echoMode(), QLineEdit::Password);
+        QTest::mousePress(reveal, Qt::LeftButton);
+        QCOMPARE(password->echoMode(), QLineEdit::Normal);
         QEvent inactive(QEvent::WindowDeactivate);
         QCoreApplication::sendEvent(main.get(), &inactive);
         QCOMPARE(password->echoMode(), QLineEdit::Password);
+        QTest::mouseRelease(reveal, Qt::LeftButton);
         QCOMPARE(password->text(), QString("qa-only-credential"));
         const QString initial = uptime->text();
         for (auto *timer : main->findChildren<QTimer *>()) {
@@ -1101,6 +1126,202 @@ private slots:
 #endif
     }
 
+    void detailedInteractionLogsRedactSecretsAndKeepThreadOrder()
+    {
+        const QString root = m_temp->path() + "/diagnostics";
+        Diagnostics::start(root);
+        struct StopLog { ~StopLog() { Diagnostics::stop(); } } stop;
+        const QString secret = QString::fromUtf8("NeverPersist-秘密-\\\"Token");
+        Diagnostics::rememberSecret(secret);
+        QDialog dialog;
+        dialog.setWindowTitle("Interaction QA");
+        auto *layout = new QVBoxLayout(&dialog);
+        auto *normal = new QLineEdit(&dialog);
+        normal->setObjectName("qaPathEdit");
+        auto *password = new QLineEdit(&dialog);
+        password->setObjectName("hostPasswordEdit");
+        password->setEchoMode(QLineEdit::Password);
+        auto *check = new QCheckBox("Record this click", &dialog);
+        check->setObjectName("qaCheck");
+        auto *combo = new QComboBox(&dialog);
+        combo->setObjectName("qaCombo");
+        combo->addItems({"first", "second"});
+        auto *action = new QAction("QA action", &dialog);
+        action->setObjectName("qaAction");
+        layout->addWidget(normal); layout->addWidget(password); layout->addWidget(check); layout->addWidget(combo);
+        dialog.show();
+        Diagnostics::watch(&dialog);
+        normal->setFocus();
+        QTest::keyClicks(normal, "D:\\release");
+        QTest::keyClick(normal, Qt::Key_Tab);
+        password->setFocus();
+        QTest::keyClicks(password, "HiddenPassword96");
+        QTest::keyClick(password, Qt::Key_Tab);
+        QTest::mouseClick(check, Qt::LeftButton);
+        combo->setFocus();
+        QTest::keyClick(combo, Qt::Key_Down);
+        action->trigger();
+        QMessageBox box(QMessageBox::Warning, "QA validation", "QA validation failed", QMessageBox::Ok, &dialog);
+        QTimer::singleShot(0, &box, &QDialog::accept);
+        box.exec();
+        Diagnostics::event("qa.nested", {{"password", "NeverPersistNested"}, {"message", secret},
+            {"url", "https://qa-user:qa-pass@example.invalid/?token=NeverPersistUrl"}});
+        Diagnostics::record("qa.legacy", "legacy=" + secret);
+        Diagnostics::event("qa.headers", {{"message", "Authorization: Bearer NeverPersistHeader\npassword=NeverPersistAssignment"}});
+        qWarning().noquote() << "QA warning" << secret;
+        std::vector<std::thread> writers;
+        for (int i = 0; i < 4; ++i) writers.emplace_back([i]() {
+            for (int n = 0; n < 25; ++n) Diagnostics::event("qa.concurrent", {{"writer", i}, {"n", n}});
+        });
+        for (auto &writer : writers) writer.join();
+        Diagnostics::rememberSecret("\\");
+        Diagnostics::event("qa.backslash", {{"path", "C:\\qa\\item"}, {"quote", "a\"b"}});
+        QByteArray logs;
+        for (const QString &name : QDir(root + "/Logs").entryList({"*.log"}, QDir::Files)) {
+            QFile file(root + "/Logs/" + name);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            logs += file.readAll();
+        }
+        QVERIFY(logs.contains("ui.input_commit"));
+        QVERIFY(logs.contains("qaPathEdit"));
+        QVERIFY(logs.contains("ui.click"));
+        QVERIFY(logs.contains("ui.combo_select"));
+        QVERIFY(logs.contains("ui.action"));
+        QVERIFY(logs.contains("ui.dialog_finished"));
+        QVERIFY(logs.contains("QA validation failed"));
+        QVERIFY(logs.contains("qt.message"));
+        QVERIFY(logs.contains("[REDACTED]"));
+        QVERIFY(!logs.contains(secret.toUtf8()));
+        const QByteArray escaped = QJsonDocument(QJsonArray{secret}).toJson(QJsonDocument::Compact);
+        QVERIFY(!logs.contains(escaped.mid(2, escaped.size() - 4)));
+        QVERIFY(!logs.contains("HiddenPassword96"));
+        QVERIFY(!logs.contains("NeverPersistNested"));
+        QVERIFY(!logs.contains("NeverPersistUrl"));
+        QVERIFY(!logs.contains("NeverPersistHeader"));
+        QVERIFY(!logs.contains("NeverPersistAssignment"));
+        QVERIFY(!logs.contains("qa-user:qa-pass"));
+        QSet<quint64> sequences;
+        int concurrent = 0;
+        for (const QByteArray &line : logs.split('\n')) {
+            if (line.trimmed().isEmpty()) continue;
+            const auto match = QRegularExpression("seq=(\\d+)").match(QString::fromUtf8(line));
+            QVERIFY(match.hasMatch());
+            const quint64 value = match.captured(1).toULongLong();
+            QVERIFY(!sequences.contains(value));
+            sequences.insert(value);
+            if (line.contains("qa.concurrent")) ++concurrent;
+            if (line.contains("qa.backslash")) {
+                const auto object = QJsonDocument::fromJson(line.mid(line.indexOf('{'))).object();
+                QVERIFY(!object.isEmpty());
+                QCOMPARE(object.value("quote").toString(), QString("a\"b"));
+            }
+        }
+        QCOMPARE(concurrent, 100);
+    }
+
+    void networkDiscoveryHandlesLoopbackCancellationAndSelection()
+    {
+        struct RestoreProxy {
+            QNetworkProxy proxy;
+            bool system;
+            ~RestoreProxy() { QNetworkProxy::setApplicationProxy(proxy); QNetworkProxyFactory::setUseSystemConfiguration(system); }
+        } restore{QNetworkProxy::applicationProxy(), QNetworkProxyFactory::usesSystemConfiguration()};
+        QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::HttpProxy, "127.0.0.1", 1));
+        NetworkHostDialog dialog(nullptr, false);
+        std::atomic<bool> wrongThread{false};
+        connect(dialog.m_table->model(), &QAbstractItemModel::dataChanged, &dialog, [&dialog, &wrongThread]() {
+            if (QThread::currentThread() != dialog.thread()) wrongThread.store(true);
+        }, Qt::DirectConnection);
+        dialog.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+        QTest::qWait(50);
+        dialog.m_generation = 1;
+        dialog.m_operationId = "qa-network";
+        dialog.m_elapsed.start();
+        dialog.m_cancelled.store(false);
+        dialog.m_scanning = true;
+        dialog.m_total = 2;
+        dialog.m_ranges.append({QHostAddress("127.0.0.1"), 0x7f000001, 0x7f000002, "QA loopback"});
+        dialog.pump();
+        QTRY_COMPARE_WITH_TIMEOUT(dialog.m_inFlight, 0, 5000);
+        QVERIFY(dialog.m_table->rowCount() >= 1);
+        bool localShareFound = false;
+        for (int row = 0; row < dialog.m_table->rowCount(); ++row) {
+            if (dialog.m_table->item(row, 1)->text() == "127.0.0.1")
+                localShareFound = dialog.m_table->item(row, 2)->text() == QStringLiteral("可连接");
+        }
+        QVERIFY(localShareFound);
+        dialog.m_table->selectRow(0);
+        QVERIFY(!dialog.selectedServer().isEmpty());
+        QVERIFY(dialog.m_scanButton->isEnabled());
+        const QString screenshots = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
+        if (!screenshots.isEmpty()) QVERIFY(dialog.grab().save(screenshots + "/network-discovery.png"));
+        dialog.m_ranges = {{QHostAddress("127.0.0.1"), 0x7f000001, 0x7f0000ff, "QA loopback"}};
+        dialog.m_rangeIndex = 0;
+        dialog.m_completed = 0;
+        dialog.m_total = 255;
+        dialog.m_scanning = true;
+        dialog.m_loggedFinished = false;
+        dialog.pump();
+        dialog.cancelScan();
+        QTRY_COMPARE_WITH_TIMEOUT(dialog.m_inFlight, 0, 5000);
+        QVERIFY(dialog.m_cancelled.load());
+        QVERIFY(dialog.m_completed < dialog.m_total);
+        QVERIFY(dialog.m_scanButton->isEnabled());
+        QVERIFY(!wrongThread.load());
+    }
+
+    void hostnameHelpContainsImageAndFitsTheScreen()
+    {
+        auto main = window();
+        main->show();
+        bool guidance = false, image = false, fits = false, captured = true;
+        QTimer::singleShot(50, main.get(), [&]() {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (!dialog) return;
+            if (auto *browser = dialog->findChild<QTextBrowser *>()) {
+                const QString text = browser->toPlainText();
+                guidance = text.contains("Windows 10") && text.contains("Windows 11") && text.contains("hostname") && text.contains("DESKTOP-U6HE6A0");
+                const QVariant resource = browser->document()->resource(QTextDocument::ImageResource, QUrl(":/hostname-guide.png"));
+                image = resource.isValid() && !resource.isNull();
+                fits = dialog->height() <= QGuiApplication::primaryScreen()->availableGeometry().height();
+                const QString screenshots = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
+                if (!screenshots.isEmpty()) captured = dialog->grab().save(screenshots + "/hostname-help.png");
+            }
+            dialog->reject();
+        });
+        QTimer::singleShot(2000, main.get(), []() {
+            if (auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) dialog->reject();
+        });
+        main->showHostnameHelp();
+        QVERIFY(guidance);
+        QVERIFY(image);
+        QVERIFY(fits);
+        QVERIFY(captured);
+    }
+
+    void remoteTargetChangesAndInvalidConfigurationNeverLaunchDeployment()
+    {
+        RemoteDebugger dialog;
+        HostEntry first, second;
+        first.id = "first"; first.name = "First"; first.sharePath = "invalid-local-path"; first.username = "qa-admin";
+        second = first; second.id = "second"; second.name = "Second";
+        dialog.setHosts({first, second}, 1);
+        auto *combo = dialog.findChild<QComboBox *>("remoteHostCombo");
+        QVERIFY(combo);
+        QCOMPARE(combo->currentIndex(), 1);
+        second.username = "changed-user";
+        dialog.setHosts({first, second}, -1);
+        QCOMPARE(combo->currentIndex(), 1);
+        QCOMPARE(dialog.m_hosts.at(1).username, QString("changed-user"));
+        dialog.deploy("enable");
+        QVERIFY(!dialog.isDeploying());
+        QVERIFY(dialog.findChild<QLabel *>("remoteStatus")->text().contains("无效"));
+        dialog.setHosts({first}, -1);
+        QCOMPARE(combo->currentIndex(), -1);
+        QVERIFY(!dialog.findChild<QPushButton *>("installRemoteButton")->isEnabled());
+    }
+
     void logRetentionRemovesOnlyManagedFiles()
     {
         const QString dir = root() + "/test logs";
@@ -1232,6 +1453,24 @@ private slots:
     {
         auto main = window();
         main->m_availableUpdateVersion = "1.1.4";
+        const QString manifest = qEnvironmentVariable("SYNC_QA_MANIFEST_PATH");
+        if (!manifest.isEmpty()) {
+            QFile file(manifest);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            const auto document = QJsonDocument::fromJson(file.readAll());
+            QVERIFY(document.isObject());
+            const auto info = document.object();
+            QCOMPARE(info.value("version").toString(), main->m_availableUpdateVersion);
+            main->m_availableUpdateNotes = info.value("notes").toString();
+            QVERIFY(!main->m_availableUpdateNotes.isEmpty());
+            for (const auto &value : info.value("sections").toArray()) {
+                UpdateNoteSection section;
+                section.title = value.toObject().value("title").toString();
+                for (const auto &item : value.toObject().value("items").toArray()) section.items.append(item.toString());
+                main->m_availableUpdateSections.append(section);
+            }
+            QVERIFY(!main->m_availableUpdateSections.isEmpty());
+        }
         main->m_installerDownloadVersion = main->m_availableUpdateVersion;
         main->m_installerReply = new PendingDownloadReply(main.get());
         const QString screenshots = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
@@ -1247,10 +1486,19 @@ private slots:
                 auto *label = dialog->findChild<QLabel *>("statusLabel");
                 matched = bar && label && label->text() == expected && bar->maximum() == maximum
                     && (maximum == 0 || bar->value() == value);
+                if (!manifest.isEmpty()) {
+                    for (auto *button : dialog->findChildren<QToolButton *>("sectionButton")) button->setChecked(true);
+                    QTest::qWait(50);
+                }
                 if (matched && !screenshots.isEmpty()) matched = dialog->grab().save(screenshots + image);
+                if (matched && !manifest.isEmpty() && !screenshots.isEmpty()) {
+                    auto *scroll = dialog->findChild<QScrollArea *>("scrollArea");
+                    if (scroll) { scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum()); QTest::qWait(50); }
+                    matched = dialog->grab().save(screenshots + image + ".bottom.png");
+                }
                 dialog->reject();
             });
-            inspect.start(0);
+            inspect.start(50);
             main->showAvailableUpdate();
             inspect.stop();
             return matched;
@@ -1444,6 +1692,13 @@ private slots:
     {
         if (!qEnvironmentVariableIsSet("SYNC_QA_REMOTE_DOWNLOAD")) QSKIP("Requires live Microsoft network and Windows Downloads folder");
         RemoteDebugger dialog;
+        const QString requested = qEnvironmentVariable("SYNC_QA_REMOTE_VERSION");
+        if (!requested.isEmpty()) {
+            auto *versions = dialog.findChild<QComboBox *>("debuggerVersion");
+            const int index = versions->findText("Visual Studio " + requested);
+            QVERIFY(index >= 0);
+            versions->setCurrentIndex(index);
+        }
         QSignalSpy finished(&dialog, &RemoteDebugger::downloadFinished);
         auto *bar = dialog.findChild<QProgressBar *>("downloadProgressBar");
         auto *progress = dialog.findChild<QLabel *>("downloadProgressLabel");
@@ -1468,7 +1723,7 @@ private slots:
         dialog.findChild<QPushButton *>("downloadDebuggerButton")->click();
         QVERIFY(!area->isHidden());
         QCOMPARE(bar->maximum(), 0);
-        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 120000);
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 300000);
         const auto result = finished.takeFirst();
         const QString path = result.at(0).toString();
         QVERIFY2(result.at(1).toString().isEmpty(), qPrintable(result.at(1).toString()));
@@ -1483,6 +1738,8 @@ private slots:
             QVERIFY(progressCaptured);
             QVERIFY(dialog.grab().save(screenshots + "/debugger-download-complete.png"));
         }
+        const QString retained = qEnvironmentVariable("SYNC_QA_REMOTE_INSTALLER_COPY");
+        if (!retained.isEmpty()) QVERIFY(QFile::copy(path, retained));
         QVERIFY(QFile::remove(path));
     }
 };

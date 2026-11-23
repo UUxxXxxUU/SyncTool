@@ -36,6 +36,7 @@
     </ClCompile>
     <ClCompile Include="src\diagnostics.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\remotedebugger.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\networkhostdialog.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -53,6 +54,7 @@
     </ClInclude>
     <ClInclude Include="src\roundedwindow.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\downloadprogress.h"><Filter>Header Files</Filter></ClInclude>
+    <QtMoc Include="src\networkhostdialog.h"><Filter>Header Files</Filter></QtMoc>
     <ClInclude Include="third_party\qt-frameless-window\FramelessWindow.hpp"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\appconfig.h">
       <Filter>Header Files</Filter>

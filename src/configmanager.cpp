@@ -1,6 +1,7 @@
 ﻿#pragma execution_character_set("utf-8")
 
 #include "configmanager.h"
+#include "diagnostics.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -8,6 +9,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
 #include <QSaveFile>
 #include <QUuid>
 
@@ -37,11 +39,14 @@ AppConfig ConfigManager::load(const QString &filePath)
 
     QFile file(filePath);
     if (!file.exists() || !file.open(QIODevice::ReadOnly)) {
+        Diagnostics::event("config.read_unavailable", {{"path", filePath}, {"exists", file.exists()}, {"error", file.errorString()}}, file.exists());
         return config;
     }
 
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
     if (!document.isObject()) {
+        Diagnostics::event("config.read_invalid", {{"path", filePath}, {"error", parseError.errorString()}, {"offset", double(parseError.offset)}}, true);
         return config;
     }
 
@@ -123,6 +128,7 @@ AppConfig ConfigManager::load(const QString &filePath)
         host.sharePath = item.value("sharePath").toString().trimmed();
         host.username = item.value("username").toString().trimmed();
         host.password = item.value("password").toString();
+        Diagnostics::rememberSecret(host.password);
         host.enabled = item.value("enabled").toBool(true);
         host.lastSyncUtc = QDateTime::fromString(item.value("lastSyncUtc").toString(), Qt::ISODateWithMs).toUTC();
 
@@ -187,6 +193,7 @@ bool ConfigManager::save(const QString &filePath, const AppConfig &config, QStri
 
     QJsonArray hostsArray;
     for (const HostEntry &host : config.hosts) {
+        Diagnostics::rememberSecret(host.password);
         if (host.sharePath.trimmed().isEmpty()) {
             continue;
         }
@@ -205,14 +212,17 @@ bool ConfigManager::save(const QString &filePath, const AppConfig &config, QStri
     }
     root.insert("hosts", hostsArray);
 
+    Diagnostics::event("config.write_requested", {{"path", filePath}, {"configuration", root}});
     QSaveFile file(filePath);
     const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
     if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
+        Diagnostics::event("config.write_failed", {{"path", filePath}, {"error", file.errorString()}}, true);
         if (errorMessage != nullptr) {
             *errorMessage = file.errorString();
         }
         return false;
     }
 
+    Diagnostics::event("config.write_done", {{"path", filePath}, {"bytes", data.size()}});
     return true;
 }

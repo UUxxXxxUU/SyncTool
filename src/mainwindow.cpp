@@ -5,6 +5,7 @@
 #include "diagnostics.h"
 #include "downloadprogress.h"
 #include "remotedebugger.h"
+#include "networkhostdialog.h"
 #include "syncworker.h"
 #include "synccompletiontoast.h"
 #include "syncplan.h"
@@ -60,6 +61,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPersistentModelIndex>
 #include <QProcess>
 #include <QPoint>
@@ -565,6 +567,13 @@ MainWindow::MainWindow(QWidget *parent, const QString &configPath, bool manageSy
             QDir(updateDownloadDir()).removeRecursively();
         }
     });
+    Diagnostics::watch(this);
+    QJsonArray hostDetails;
+    for (const auto &host : m_config.hosts) hostDetails.append(QJsonObject{{"host", host.id}, {"name", host.name},
+        {"share", host.sharePath}, {"user", host.username}, {"credential_configured", !host.password.isEmpty()}, {"enabled", host.enabled}});
+    Diagnostics::event("config.loaded", {{"path", m_configPath}, {"release", m_config.releaseDir},
+        {"hosts", hostDetails}, {"auto_sync", m_config.autoSync}, {"interval", m_config.scanIntervalSeconds},
+        {"rules", m_config.syncRules.size()}, {"exclusions", QJsonArray::fromStringList(m_config.excludedFilePatterns)}});
 }
 
 MainWindow::~MainWindow()
@@ -592,13 +601,24 @@ bool MainWindow::event(QEvent *event)
 {
     const bool handled = QMainWindow::event(event);
     if (event->type() == QEvent::WindowDeactivate || event->type() == QEvent::Hide) {
-        if (m_hostPasswordEdit) m_ui->showPasswordButton->setChecked(false);
+        if (m_hostPasswordEdit) setPasswordVisible(false);
     }
     if (event->type() == QEvent::Show || event->type() == QEvent::Hide
         || event->type() == QEvent::WindowStateChange) {
         updateUpdateIndicators();
     }
     return handled;
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_ui->showPasswordButton
+        && (event->type() == QEvent::Leave || event->type() == QEvent::FocusOut
+            || event->type() == QEvent::UngrabMouse || event->type() == QEvent::Hide
+            || event->type() == QEvent::MouseButtonRelease)) {
+        setPasswordVisible(false);
+    }
+    return RoundedMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -630,6 +650,12 @@ void MainWindow::trayIconActivated(QSystemTrayIcon::ActivationReason reason)
 void MainWindow::realExit()
 {
     if (m_exitFinished) {
+        return;
+    }
+    if (m_remoteDebugger && m_remoteDebugger->isDeploying()) {
+        m_remoteDebugger->show();
+        m_remoteDebugger->raise();
+        RoundedMessageBox::warning(this, "远程操作进行中", "请等待远程安装或自启设置返回结果后再退出。");
         return;
     }
 
@@ -755,10 +781,12 @@ void MainWindow::setupUi()
     m_hostPathEdit = m_ui->hostPathEdit;
     m_hostUserEdit = m_ui->hostUserEdit;
     m_hostPasswordEdit = m_ui->hostPasswordEdit;
-    connect(m_ui->showPasswordButton, &QToolButton::toggled, this, [this](bool visible) {
-        m_hostPasswordEdit->setEchoMode(visible ? QLineEdit::Normal : QLineEdit::Password);
-        m_ui->showPasswordButton->setText(visible ? "隐藏密码" : "显示密码");
-    });
+    m_ui->showPasswordButton->installEventFilter(this);
+    connect(m_ui->showPasswordButton, &QToolButton::pressed, this, [this]() { setPasswordVisible(true); });
+    connect(m_ui->showPasswordButton, &QToolButton::released, this, [this]() { setPasswordVisible(false); });
+    setPasswordVisible(false);
+    connect(m_ui->scanHostsButton, &QPushButton::clicked, this, &MainWindow::scanNetworkHosts);
+    connect(m_ui->hostnameHelpButton, &QToolButton::clicked, this, &MainWindow::showHostnameHelp);
     m_hostTable = m_ui->hostTable;
     m_releaseDirEdit->lineEdit()->setPlaceholderText("选择或输入本地 Release 目录路径...");
     m_ui->stopButton->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
@@ -802,6 +830,7 @@ void MainWindow::setupUi()
         preferences.autoSync = enabled;
         QString error;
         if (!applyPreferences(preferences, &error)) {
+            Diagnostics::event("config.preferences_failed", {{"error", error}}, true);
             updateSettingsSummary();
             RoundedMessageBox::warning(this, "保存失败", error);
         }
@@ -866,10 +895,78 @@ void MainWindow::showRemoteDebugger()
             if (error.isEmpty()) showNotice("远程调试器下载完成", QString("安装包已保存到“下载”：\n%1").arg(path), false);
             else showNotice("远程调试器下载失败", error, true);
         });
+        connect(m_remoteDebugger, &RemoteDebugger::deploymentFinished, this, [this]() {
+            m_remoteDebugger->setHosts(m_config.hosts, -1);
+        });
     }
+    m_remoteDebugger->setHosts(m_config.hosts, m_hostTable->currentRow());
     m_remoteDebugger->show();
     m_remoteDebugger->raise();
     m_remoteDebugger->activateWindow();
+}
+
+void MainWindow::setPasswordVisible(bool visible)
+{
+    if (m_hostPasswordEdit->echoMode() != (visible ? QLineEdit::Normal : QLineEdit::Password))
+        Diagnostics::event("ui.password_visibility", {{"visible", visible}});
+    m_hostPasswordEdit->setEchoMode(visible ? QLineEdit::Normal : QLineEdit::Password);
+    QPixmap pixmap(48, 48);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(m_ui->showPasswordButton->palette().color(QPalette::ButtonText), 3.0));
+    QPainterPath outline;
+    outline.moveTo(5, 24);
+    outline.cubicTo(15, 8, 33, 8, 43, 24);
+    outline.cubicTo(33, 40, 15, 40, 5, 24);
+    painter.drawPath(outline);
+    painter.drawEllipse(QPointF(24, 24), 6, 6);
+    if (!visible) painter.drawLine(QPointF(8, 7), QPointF(40, 41));
+    painter.end();
+    m_ui->showPasswordButton->setIcon(QIcon(pixmap));
+    m_ui->showPasswordButton->setIconSize(QSize(20, 20));
+}
+
+void MainWindow::scanNetworkHosts()
+{
+    NetworkHostDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const QString server = dialog.selectedServer();
+    if (server.isEmpty()) return;
+    QString path = normalizePathForUi(m_hostPathEdit->text());
+    if (path.startsWith("\\\\")) {
+        const int separator = path.indexOf('\\', 2);
+        path = "\\\\" + server + (separator >= 0 ? path.mid(separator) : "\\");
+    } else {
+        path = "\\\\" + server + "\\";
+    }
+    m_hostPathEdit->setText(path);
+    Diagnostics::event("host.scan_selection", {{"server", server}, {"path", path}, {"saved", false}});
+    if (m_hostNameEdit->text().trimmed().isEmpty()) m_hostNameEdit->setText(server);
+    m_hostPathEdit->setFocus();
+}
+
+void MainWindow::showHostnameHelp()
+{
+    QFile resource(":/hostname-help.html");
+    if (!resource.open(QIODevice::ReadOnly)) {
+        RoundedMessageBox::warning(this, "帮助", "无法读取主机名图文帮助。");
+        return;
+    }
+    RoundedDialog dialog(this);
+    dialog.setWindowTitle("如何查看远程电脑的主机名");
+    dialog.resize(800, 650);
+    if (QScreen *screen = QGuiApplication::screenAt(frameGeometry().center()))
+        dialog.resize(QSize(800, 650).boundedTo(screen->availableGeometry().size() - QSize(32, 48)));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *browser = new QTextBrowser(&dialog);
+    browser->setHtml(QString::fromUtf8(resource.readAll()));
+    layout->addWidget(browser);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    buttons->button(QDialogButtonBox::Close)->setText("关闭");
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog.exec();
 }
 
 void MainWindow::showNotice(const QString &title, const QString &message, bool warning, const QString &details)
@@ -1255,6 +1352,7 @@ void MainWindow::checkForUpdates()
 
 void MainWindow::startUpdateCheck(bool interactive)
 {
+    Diagnostics::event("update.check_requested", {{"interactive", interactive}, {"action", Diagnostics::lastUserAction()}});
     if (m_isClosing) {
         return;
     }
@@ -1408,6 +1506,8 @@ void MainWindow::requestUpdateInfo(bool useRawFallback)
 
 void MainWindow::finishUpdateCheck(const QString &errorMessage)
 {
+    Diagnostics::event("update.check_finished", {{"error", errorMessage}, {"available_version", m_availableUpdateVersion},
+        {"installer_url", m_availableInstallerUrl.toString()}}, !errorMessage.isEmpty());
     const bool interactive = m_updateCheckInteractive;
     m_updateCheckInProgress = false;
     m_updateCheckInteractive = false;
@@ -1596,6 +1696,7 @@ void MainWindow::setUpdateDialogStatus(const QString &text, int percent)
 
 void MainWindow::startInstallerDownload(bool interactive)
 {
+    Diagnostics::event("update.download_requested", {{"interactive", interactive}, {"version", m_availableUpdateVersion}, {"url", m_availableInstallerUrl.toString()}});
     if (m_isClosing || m_availableUpdateVersion.isEmpty() || !m_availableInstallerUrl.isValid()) {
         return;
     }
@@ -1673,6 +1774,7 @@ void MainWindow::requestInstallerChecksum()
 
 void MainWindow::requestInstallerFile(const QString &expectedSha256)
 {
+    Diagnostics::event("update.download_request", {{"url", m_installerDownloadUrl.toString()}, {"expected_sha256", expectedSha256}});
     const QString dirPath = updateDownloadDir();
     if (!QDir().mkpath(dirPath)) {
         failInstallerDownload(QString("无法创建临时目录：%1").arg(QDir::toNativeSeparators(dirPath)));
@@ -1790,6 +1892,7 @@ bool MainWindow::appendInstallerChunk(QNetworkReply *reply)
 
 void MainWindow::abortInstallerDownload()
 {
+    if (m_installerReply) Diagnostics::event("update.download_abort", {{"version", m_installerDownloadVersion}, {"url", m_installerDownloadUrl.toString()}});
     if (m_installerReply != nullptr) {
         QNetworkReply *reply = m_installerReply;
         m_installerReply.clear();
@@ -1816,6 +1919,7 @@ void MainWindow::abortInstallerDownload()
 
 void MainWindow::failInstallerDownload(const QString &errorMessage)
 {
+    Diagnostics::event("update.download_failed", {{"version", m_installerDownloadVersion}, {"url", m_installerDownloadUrl.toString()}, {"error", errorMessage}}, true);
     const bool interactive = m_installerDownloadInteractive;
     abortInstallerDownload();
     if (m_isClosing) {
@@ -1836,6 +1940,7 @@ void MainWindow::failInstallerDownload(const QString &errorMessage)
 
 void MainWindow::finishInstallerDownload()
 {
+    Diagnostics::event("update.download_completed", {{"version", m_installerDownloadVersion}, {"path", m_installerFile ? m_installerFile->fileName() : QString()}});
     const bool installNow = m_installAfterDownload;
     m_installerDownloadVersion.clear();
     m_installerDownloadUrl = QUrl();
@@ -1868,6 +1973,12 @@ void MainWindow::finishInstallerDownload()
 
 bool MainWindow::launchInstaller(bool silent, QString *errorMessage)
 {
+    Diagnostics::event("update.install_requested", {{"silent", silent}, {"version", m_readyInstallerVersion}, {"path", m_readyInstallerPath},
+        {"directory", QCoreApplication::applicationDirPath()}});
+    if (m_remoteDebugger && m_remoteDebugger->isDeploying()) {
+        if (errorMessage) *errorMessage = "远程部署正在进行，请等待完成后再更新本程序。";
+        return false;
+    }
 #ifdef Q_OS_WIN
     const QString appDir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
     const bool writable = isDirectoryWritable(appDir);
@@ -1928,7 +2039,8 @@ bool MainWindow::installSilentUpdateIfIdle()
 {
     if (m_isClosing || m_isInstallingUpdate || !m_config.silentUpdate || !isReadyInstallerCurrent()
         || m_silentInstallFailedVersion == m_readyInstallerVersion || m_updateDialogOpen
-        || hasRunningWorkers() || m_pendingSyncAfterCurrentRun || (isVisible() && isActiveWindow())
+        || hasRunningWorkers() || (m_remoteDebugger && m_remoteDebugger->isDeploying())
+        || m_pendingSyncAfterCurrentRun || (isVisible() && isActiveWindow())
         || QApplication::activeModalWidget() != nullptr || QApplication::activePopupWidget() != nullptr) {
         return false;
     }
@@ -2233,6 +2345,10 @@ void MainWindow::browseReleaseDir()
 
 void MainWindow::addOrUpdateHost(bool updateExisting)
 {
+    Diagnostics::rememberSecret(m_hostPasswordEdit->text());
+    Diagnostics::event("host.save_requested", {{"update", updateExisting}, {"row", m_hostTable->currentRow()},
+        {"name", m_hostNameEdit->text()}, {"share", m_hostPathEdit->text()}, {"user", m_hostUserEdit->text()},
+        {"credential_configured", !m_hostPasswordEdit->text().isEmpty()}, {"enabled", m_hostEnabledCheck->isChecked()}});
     const QString sharePath = normalizePathForUi(m_hostPathEdit->text());
     if (sharePath.isEmpty()) {
         RoundedMessageBox::warning(this, "提示", "请填写共享目录路径。");
@@ -2272,6 +2388,8 @@ void MainWindow::addOrUpdateHost(bool updateExisting)
     if (!host.enabled) {
         requestWorkerToStop(host.id);
     }
+    Diagnostics::event("host.saved", {{"host", host.id}, {"name", host.name}, {"share", host.sharePath},
+        {"user", host.username}, {"enabled", host.enabled}, {"update", updateExisting}});
     saveConfiguration();
     if (host.enabled) {
         requestAutoSync(QString("主机 [%1] 配置已更新，开始自动同步").arg(hostDisplayText(host)));
@@ -2293,6 +2411,8 @@ void MainWindow::removeSelectedHost()
 
     m_syncContextRevisions.remove(m_config.hosts.at(row).id);
     m_copyPreview->removeHost(m_config.hosts.at(row).id);
+    Diagnostics::event("host.removed", {{"host", m_config.hosts.at(row).id}, {"name", m_config.hosts.at(row).name},
+        {"share", m_config.hosts.at(row).sharePath}});
     m_config.hosts.removeAt(row);
     refreshHostTable();
     clearHostEditor();
@@ -2301,7 +2421,7 @@ void MainWindow::removeSelectedHost()
 
 void MainWindow::clearHostEditor()
 {
-    m_ui->showPasswordButton->setChecked(false);
+    setPasswordVisible(false);
     m_hostEnabledCheck->setChecked(true);
     m_hostNameEdit->clear();
     m_hostPathEdit->clear();
@@ -2313,13 +2433,14 @@ void MainWindow::clearHostEditor()
 void MainWindow::loadSelectedHostToEditor()
 {
     if (m_isClosing) return;
-    m_ui->showPasswordButton->setChecked(false);
+    setPasswordVisible(false);
     const int row = m_hostTable->currentRow();
     if (row < 0 || row >= m_config.hosts.size()) {
         return;
     }
 
     const HostEntry &host = m_config.hosts.at(row);
+    Diagnostics::event("host.selected", {{"host", host.id}, {"row", row}, {"name", host.name}, {"share", host.sharePath}});
     m_hostEnabledCheck->setChecked(host.enabled);
     m_hostNameEdit->setText(host.name);
     m_hostPathEdit->setText(normalizePathForUi(host.sharePath));
@@ -2333,7 +2454,7 @@ void MainWindow::saveConfiguration()
 
     QString error;
     if (!ConfigManager::save(m_configPath, m_config, &error)) {
-        Diagnostics::record("config.write_failed", {}, true);
+        Diagnostics::event("config.write_failed", {{"path", m_configPath}, {"error", error}}, true);
         RoundedMessageBox::warning(this, "保存失败", QString("配置文件写入失败：%1").arg(error));
         return;
     }
@@ -2342,9 +2463,13 @@ void MainWindow::saveConfiguration()
         return;
     }
 
+    if (m_remoteDebugger) m_remoteDebugger->setHosts(m_config.hosts, -1);
     statusBar()->showMessage("配置已保存", 3000);
     Diagnostics::record("config.saved", QString("hosts=%1 types=%2 rules=%3")
                         .arg(m_config.hosts.size()).arg(m_config.selectedFileTypes.size()).arg(m_config.syncRules.size()));
+    Diagnostics::event("config.snapshot", {{"path", m_configPath}, {"release", m_config.releaseDir},
+        {"auto_sync", m_config.autoSync}, {"startup", m_config.startWithSystem}, {"silent_update", m_config.silentUpdate},
+        {"types", QJsonArray::fromStringList(m_config.selectedFileTypes)}, {"exclusions", QJsonArray::fromStringList(m_config.excludedFilePatterns)}});
 }
 
 void MainWindow::syncNow()
@@ -2366,6 +2491,7 @@ void MainWindow::syncNow()
 
 void MainWindow::stopAllOperations()
 {
+    Diagnostics::event("sync.stop_all_requested", {{"running", m_runningThreads.size()}, {"auto_sync", m_config.autoSync}});
     if (m_isClosing) {
         return;
     }
@@ -2797,6 +2923,7 @@ void MainWindow::startOperations(bool performCopy)
     collectUiToConfig();
     const QVector<int> rows = targetRows();
     if (rows.isEmpty()) {
+        Diagnostics::event("sync.skipped", {{"reason", "no_target_hosts"}, {"copy", performCopy}});
         if (performCopy) {
             statusBar()->showMessage("没有可同步的主机被勾选。", 3000);
         }
@@ -2806,6 +2933,7 @@ void MainWindow::startOperations(bool performCopy)
     QStringList selectedTypes = m_config.selectedFileTypes;
     selectedTypes.removeDuplicates();
     if (selectedTypes.isEmpty() && std::none_of(m_config.syncRules.cbegin(), m_config.syncRules.cend(), [](const SyncRule &rule) { return rule.enabled; })) {
+        Diagnostics::event("sync.skipped", {{"reason", "no_types_or_rules"}, {"copy", performCopy}});
         if (performCopy) {
             statusBar()->showMessage("请勾选基本同步类型，或启用至少一条附加同步规则。", 3000);
         }
@@ -2821,6 +2949,8 @@ void MainWindow::startOperations(bool performCopy)
         auto *thread = new QThread(this);
         auto *worker = new SyncWorker(host, m_config.releaseDir, selectedTypes, performCopy,
                                       m_config.syncRules, nullptr, m_config.excludedFilePatterns);
+        worker->setProperty("diagnosticsSourceClass", sender() ? sender()->metaObject()->className() : "startup_or_direct");
+        worker->setProperty("diagnosticsSourceObject", sender() ? sender()->objectName() : QString());
         worker->moveToThread(thread);
 
         connect(thread, &QThread::started, worker, &SyncWorker::process);

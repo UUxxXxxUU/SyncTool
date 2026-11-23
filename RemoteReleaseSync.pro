@@ -10,6 +10,7 @@ SOURCES += \
     src/configmanager.cpp \
     src/diagnostics.cpp \
     src/remotedebugger.cpp \
+    src/networkhostdialog.cpp \
     src/main.cpp \
     src/mainwindow.cpp \
     src/synccompletiontoast.cpp \
@@ -25,6 +26,7 @@ HEADERS += \
     src/configmanager.h \
     src/diagnostics.h \
     src/remotedebugger.h \
+    src/networkhostdialog.h \
     src/mainwindow.h \
     src/synccompletiontoast.h \
     src/syncplan.h \
@@ -43,4 +45,4 @@ FORMS += \
     src/updatedialog.ui
 
 win32:RC_FILE = resources/app.rc
-win32:LIBS += -lMpr -lShell32 -lUser32 -lVersion -lWintrust -lCrypt32
+win32:LIBS += -lMpr -lShell32 -lUser32 -lVersion -lWintrust -lCrypt32 -lIphlpapi -lWs2_32

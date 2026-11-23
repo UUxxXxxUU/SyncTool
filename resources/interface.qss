@@ -117,7 +117,13 @@ QPushButton:hover, QToolButton#showPasswordButton:hover {
     border-color: #7fa9d6;
 }
 
-QPushButton:pressed, QToolButton#showPasswordButton:checked {
+QToolButton#showPasswordButton {
+    padding: 4px;
+    min-width: 20px;
+    max-width: 20px;
+}
+
+QPushButton:pressed, QToolButton#showPasswordButton:pressed {
     background-color: #d9eafd;
 }
 

@@ -65,6 +65,7 @@ public:
 
 protected:
     bool event(QEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 
 private slots:
@@ -112,6 +113,9 @@ private:
     void updateSettingsSummary();
     void showUsageTips();
     void showRemoteDebugger();
+    void setPasswordVisible(bool visible);
+    void scanNetworkHosts();
+    void showHostnameHelp();
     void showNotice(const QString &title, const QString &message, bool warning, const QString &details = {});
     void updateUptime();
     void saveExclusions();

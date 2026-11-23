@@ -6,6 +6,8 @@
 #include <atomic>
 #include <memory>
 #include <QObject>
+#include <QElapsedTimer>
+#include <QSet>
 #include <QStringList>
 
 class SyncWorker : public QObject
@@ -85,6 +87,10 @@ private:
     QVector<SyncRule> m_rules;
     QStringList m_exclusions;
     QString m_operationId;
+    QString m_parentAction;
+    QElapsedTimer m_elapsed;
+    int m_loggedProgress = -1;
+    QSet<QString> m_loggedFiles;
     bool m_performCopy = false;
     std::shared_ptr<std::atomic<bool>> m_cancelled;
 };

@@ -304,11 +304,19 @@
                             </widget>
                           </item>
                           <item row="0" column="1" colspan="3">
-                            <widget class="QLineEdit" name="hostPathEdit">
+                            <layout class="QHBoxLayout" name="hostPathLayout">
+                            <item><widget class="QLineEdit" name="hostPathEdit">
                               <property name="placeholderText">
                                 <string>\\SERVER\share\Release</string>
                               </property>
-                            </widget>
+                            </widget></item>
+                            <item><widget class="QPushButton" name="scanHostsButton"><property name="text"><string>扫描设备</string></property></widget></item>
+                            <item><widget class="QToolButton" name="hostnameHelpButton">
+                              <property name="text"><string>?</string></property>
+                              <property name="toolTip"><string>如何查看主机名（Windows 10 / 11 图文说明）</string></property>
+                              <property name="accessibleName"><string>查看主机名图文帮助</string></property>
+                            </widget></item>
+                            </layout>
                           </item>
                           <item row="1" column="0">
                             <widget class="QLabel" name="nameLabel">
@@ -346,8 +354,9 @@
                                 <property name="echoMode"><enum>QLineEdit::Password</enum></property>
                               </widget></item>
                               <item><widget class="QToolButton" name="showPasswordButton">
-                                <property name="text"><string>显示密码</string></property>
-                                <property name="checkable"><bool>true</bool></property>
+                                <property name="toolTip"><string>按住显示密码，松开隐藏</string></property>
+                                <property name="accessibleName"><string>按住显示密码</string></property>
+                                <property name="checkable"><bool>false</bool></property>
                               </widget></item>
                             </layout>
                           </item>
