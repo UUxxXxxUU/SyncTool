@@ -124,6 +124,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package-release.ps1 
 
 主窗口和普通弹窗采用统一小圆角及自定义标题栏，最大化时恢复直角。此方案不提供原生贴边分屏和系统阴影。
 
+1.1.3 起按窗口所在显示器的工作区确定最大化范围，并保留还原时的窗口位置和尺寸。
+
 ## 附加同步规则（1.0.8 起）
 
 Release 目录是两端路径的基准。例如本地 `D:\test sync\a\Release`、远端 `\\SERVER\b\Release`：

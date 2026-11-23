@@ -65,6 +65,14 @@
 
 namespace
 {
+#ifdef Q_OS_WIN
+class NativeRoundedFrame : public RoundedMainWindow
+{
+public:
+    using RoundedMainWindow::nativeEvent;
+};
+#endif
+
 class PendingDownloadReply : public QNetworkReply
 {
 public:
@@ -199,7 +207,7 @@ private slots:
             QApplication::setFont(QFont("Microsoft YaHei", 10));
         }
         QApplication::setWindowIcon(QIcon(":/icons/app_32.png"));
-        QApplication::setApplicationVersion("1.1.2");
+        QApplication::setApplicationVersion("1.1.3");
         QSettings settings(startupKey, QSettings::NativeFormat);
         m_hadStartup = settings.contains("RemoteReleaseSync");
         m_originalStartup = settings.value("RemoteReleaseSync").toString();
@@ -1223,7 +1231,7 @@ private slots:
     void updateProgressSurvivesDialogReopening()
     {
         auto main = window();
-        main->m_availableUpdateVersion = "1.1.3";
+        main->m_availableUpdateVersion = "1.1.4";
         main->m_installerDownloadVersion = main->m_availableUpdateVersion;
         main->m_installerReply = new PendingDownloadReply(main.get());
         const QString screenshots = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
@@ -1298,6 +1306,138 @@ private slots:
         maximize->click();
         QTRY_VERIFY(!main->isMaximized());
         QCOMPARE(main->grab().toImage().pixelColor(0, 0).alpha(), 0);
+    }
+
+    void nativeMaximizeBoundsKeepPhysicalUnits()
+    {
+#ifdef Q_OS_WIN
+        NativeRoundedFrame frame;
+        frame.setMinimumSize(220, 180);
+        frame.resize(600, 400);
+        const HWND hwnd = reinterpret_cast<HWND>(frame.winId());
+        QVERIFY(hwnd);
+        MONITORINFO info = {};
+        info.cbSize = sizeof(info);
+        const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        QVERIFY(monitor && GetMonitorInfo(monitor, &info));
+        const LONG width = info.rcWork.right - info.rcWork.left;
+        const LONG height = info.rcWork.bottom - info.rcWork.top;
+        MINMAXINFO limits = {};
+        limits.ptReserved = {13, 17};
+        limits.ptMaxSize = {width / 2, height / 2};
+        limits.ptMaxTrackSize = limits.ptMaxSize;
+        MSG message = {};
+        message.hwnd = hwnd;
+        message.message = WM_GETMINMAXINFO;
+        message.lParam = reinterpret_cast<LPARAM>(&limits);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        qintptr result = -1;
+#else
+        long result = -1;
+#endif
+        QVERIFY(frame.nativeEvent("windows_generic_MSG", &message, &result));
+        QCOMPARE(result, decltype(result)(0));
+        QCOMPARE(limits.ptMaxSize.x, width);
+        QCOMPARE(limits.ptMaxSize.y, height);
+        QCOMPARE(limits.ptMaxPosition.x, info.rcWork.left - info.rcMonitor.left);
+        QCOMPARE(limits.ptMaxPosition.y, info.rcWork.top - info.rcMonitor.top);
+        QVERIFY(limits.ptMaxTrackSize.x >= width && limits.ptMaxTrackSize.y >= height);
+        QVERIFY(limits.ptMinTrackSize.x >= frame.minimumWidth() * frame.devicePixelRatioF());
+        QVERIFY(limits.ptMinTrackSize.y >= frame.minimumHeight() * frame.devicePixelRatioF());
+        QCOMPARE(limits.ptReserved.x, LONG(13));
+        QCOMPARE(limits.ptReserved.y, LONG(17));
+
+        frame.setMaximumSize(400, 300);
+        QVERIFY(frame.nativeEvent("windows_generic_MSG", &message, &result));
+        QVERIFY(limits.ptMaxSize.x <= qCeil(frame.maximumWidth() * frame.devicePixelRatioF()));
+        QVERIFY(limits.ptMaxSize.y <= qCeil(frame.maximumHeight() * frame.devicePixelRatioF()));
+        QVERIFY(limits.ptMaxSize.x >= limits.ptMinTrackSize.x);
+        QVERIFY(limits.ptMaxSize.y >= limits.ptMinTrackSize.y);
+
+        frame.setFixedSize(220, 180);
+        QVERIFY(!frame.nativeEvent("windows_generic_MSG", &message, &result));
+        message.message = WM_NULL;
+        QVERIFY(!frame.nativeEvent("windows_generic_MSG", &message, &result));
+#else
+        QSKIP("Requires native Windows monitor coordinates");
+#endif
+    }
+
+    void maximizedFrameFillsWorkAreaAndRestores()
+    {
+#ifdef Q_OS_WIN
+        auto main = window();
+        main->show();
+        QVERIFY(QTest::qWaitForWindowExposed(main.get()));
+        QTest::qWait(50);
+        const QRect normal = main->frameGeometry();
+        auto *title = main->findChild<QWidget *>("roundedTitleBar");
+        QVERIFY(title);
+        QToolButton *maximize = nullptr;
+        for (auto *button : title->findChildren<QToolButton *>()) {
+            if (button->accessibleName() == QString("最大化")) maximize = button;
+        }
+        QVERIFY(maximize);
+        const HWND hwnd = reinterpret_cast<HWND>(main->winId());
+        auto fillsWorkArea = [&]() {
+            RECT bounds = {};
+            MONITORINFO info = {};
+            info.cbSize = sizeof(info);
+            const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            return monitor && GetMonitorInfo(monitor, &info) && GetWindowRect(hwnd, &bounds)
+                && qAbs(bounds.left - info.rcWork.left) <= 1
+                && qAbs(bounds.top - info.rcWork.top) <= 1
+                && qAbs(bounds.right - info.rcWork.right) <= 1
+                && qAbs(bounds.bottom - info.rcWork.bottom) <= 1;
+        };
+        QTest::mouseClick(maximize, Qt::LeftButton);
+        QTRY_VERIFY(main->isMaximized());
+        QTest::qWait(50);
+        RECT observed = {};
+        MONITORINFO observedMonitor = {};
+        observedMonitor.cbSize = sizeof(observedMonitor);
+        const HMONITOR observedScreen = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        QVERIFY(observedScreen && GetMonitorInfo(observedScreen, &observedMonitor) && GetWindowRect(hwnd, &observed));
+        qInfo() << "Native maximized edges" << observed.left << observed.top << observed.right << observed.bottom
+                << "work area" << observedMonitor.rcWork.left << observedMonitor.rcWork.top
+                << observedMonitor.rcWork.right << observedMonitor.rcWork.bottom
+                << "logical" << main->frameGeometry() << "DPR" << main->devicePixelRatioF();
+        QTRY_VERIFY2(fillsWorkArea(), "Native maximized bounds do not fill the monitor work area");
+        QWindow *handle = main->windowHandle();
+        QVERIFY(handle);
+        QScreen *screen = handle->screen();
+        QVERIFY(screen);
+        QCOMPARE(main->frameGeometry(), screen->availableGeometry());
+        const QImage image = main->grab().toImage();
+        RECT bounds = {};
+        QVERIFY(GetWindowRect(hwnd, &bounds));
+        QVERIFY(qAbs(image.width() - (bounds.right - bounds.left)) <= 1);
+        QVERIFY(qAbs(image.height() - (bounds.bottom - bounds.top)) <= 1);
+        qInfo() << "Maximized logical" << main->frameGeometry() << "DPR" << main->devicePixelRatioF()
+                << "native" << QSize(bounds.right - bounds.left, bounds.bottom - bounds.top)
+                << "rendered" << image.size();
+        const QString screenshots = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
+        if (!screenshots.isEmpty()) {
+            QVERIFY(QDir().mkpath(screenshots));
+            QVERIFY(image.save(screenshots + "/maximized.png"));
+        }
+        QTest::mouseClick(maximize, Qt::LeftButton);
+        QTRY_VERIFY(!main->isMaximized());
+        QTRY_COMPARE(main->frameGeometry(), normal);
+        QCOMPARE(main->grab().toImage().pixelColor(0, 0).alpha(), 0);
+
+        const QPoint point(100, title->height() / 2);
+        QTest::mouseDClick(title, Qt::LeftButton, Qt::NoModifier, point);
+        QTest::mouseRelease(title, Qt::LeftButton, Qt::NoModifier, point);
+        QTRY_VERIFY(main->isMaximized());
+        QTRY_VERIFY(fillsWorkArea());
+        QTest::mouseDClick(title, Qt::LeftButton, Qt::NoModifier, point);
+        QTest::mouseRelease(title, Qt::LeftButton, Qt::NoModifier, point);
+        QTRY_VERIFY(!main->isMaximized());
+        QTRY_COMPARE(main->frameGeometry(), normal);
+#else
+        QSKIP("Requires native Windows window bounds");
+#endif
     }
 
     void microsoftDebuggerDownload()
