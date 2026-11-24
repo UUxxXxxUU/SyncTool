@@ -5,6 +5,7 @@
         <file>hostname-help.html</file>
         <file>hostname-guide.png</file>
         <file>remote-deploy.ps1</file>
+        <file>remote-launch.ps1</file>
         <file>remote-bootstrap.ps1</file>
         <file>icons/app_16.png</file>
         <file>icons/app_24.png</file>

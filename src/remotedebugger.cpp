@@ -26,12 +26,15 @@
 #include <QSslSocket>
 #include <QSslError>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QScreen>
 #include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryFile>
+#include <QTemporaryDir>
+#include <QTextCodec>
 #include <QTimer>
 #include <QtEndian>
 #include <QUuid>
@@ -53,6 +56,17 @@ namespace
 {
 constexpr qint64 maxInstallerSize = 256 * 1024 * 1024;
 constexpr int pathColumn = 3;
+
+QString deploymentErrorText(const QByteArray &bytes)
+{
+    QTextCodec::ConverterState state;
+    const QString utf8 = QTextCodec::codecForName("UTF-8")->toUnicode(bytes.constData(), bytes.size(), &state);
+    if (!state.invalidChars) return utf8;
+#ifdef Q_OS_WIN
+    if (auto *codec = QTextCodec::codecForName("CP" + QByteArray::number(GetOEMCP()))) return codec->toUnicode(bytes);
+#endif
+    return QString::fromLocal8Bit(bytes);
+}
 
 struct Installation
 {
@@ -401,16 +415,24 @@ void RemoteDebugger::deploy(const QString &operation)
         setRemoteStatus("无法读取远程部署资源。");
         return;
     }
-    m_deploymentScript = std::make_unique<QTemporaryFile>(QDir::tempPath() + "/rrs-deploy-XXXXXX.ps1");
-    QByteArray scriptBytes = script.readAll();
-    if (!scriptBytes.startsWith(QByteArray::fromHex("efbbbf"))) scriptBytes.prepend(QByteArray::fromHex("efbbbf"));
-    if (!m_deploymentScript->open() || m_deploymentScript->write(scriptBytes) != scriptBytes.size()
-        || !m_deploymentScript->flush()) {
-        setRemoteStatus("无法准备远程部署脚本。");
-        m_deploymentScript.reset();
+    m_deploymentDirectory = std::make_unique<QTemporaryDir>(QDir::tempPath() + "/rrs-deploy-XXXXXX");
+    if (!m_deploymentDirectory->isValid()) {
+        setRemoteStatus("无法创建本机部署临时目录：" + m_deploymentDirectory->errorString());
+        m_deploymentDirectory.reset();
         return;
     }
-    m_deploymentScript->close();
+    QFile scriptFile(m_deploymentDirectory->filePath("deploy.ps1"));
+    QByteArray scriptBytes = script.readAll();
+    if (!scriptBytes.startsWith(QByteArray::fromHex("efbbbf"))) scriptBytes.prepend(QByteArray::fromHex("efbbbf"));
+    if (!scriptFile.open(QIODevice::WriteOnly) || scriptFile.write(scriptBytes) != scriptBytes.size()
+        || !scriptFile.flush()) {
+        setRemoteStatus("无法准备本机部署脚本：" + scriptFile.errorString());
+        scriptFile.close();
+        m_deploymentDirectory.reset();
+        return;
+    }
+    // QTemporaryFile::close() 在 Qt 5.12 仍保留写句柄；普通 QFile 关闭后 PowerShell 才能读取。
+    scriptFile.close();
     QJsonObject request;
     request.insert("operation", operation);
     request.insert("run", m_deploymentId);
@@ -422,16 +444,38 @@ void RemoteDebugger::deploy(const QString &operation)
     request.insert("installer", QDir::toNativeSeparators(installer));
     request.insert("bootstrap", QString::fromLatin1(bootstrap.readAll().toBase64()));
     const QByteArray payload = QJsonDocument(request).toJson(QJsonDocument::Compact);
+    startDeploymentProcess(scriptFile.fileName(), payload);
+}
+
+void RemoteDebugger::startDeploymentProcess(const QString &scriptPath, const QByteArray &payload)
+{
+    if (m_deployment || !QDir::isAbsolutePath(scriptPath) || payload.isEmpty()) return;
     const QString powershell = qEnvironmentVariable("SystemRoot") + "/System32/WindowsPowerShell/v1.0/powershell.exe";
     if (!QFileInfo(powershell).isFile()) {
         setRemoteStatus("未找到 Windows PowerShell，无法执行远程操作。");
-        m_deploymentScript.reset();
+        m_deploymentDirectory.reset();
         return;
     }
+    QFile launcher(":/remote-launch.ps1");
+    if (!launcher.open(QIODevice::ReadOnly)) {
+        setRemoteStatus("无法读取本机部署启动器。");
+        m_deploymentDirectory.reset();
+        return;
+    }
+    QString command = QString::fromUtf8(launcher.readAll());
+    if (command.startsWith(QChar(0xfeff))) command.remove(0, 1);
+    QByteArray encoded(command.size() * 2, '\0');
+    for (int index = 0; index < command.size(); ++index)
+        qToLittleEndian<quint16>(command.at(index).unicode(), reinterpret_cast<uchar *>(encoded.data()) + index * 2);
     m_deploymentOutput.clear();
     m_deploymentErrors.clear();
     m_deploymentHasResult = false;
+    m_remoteContactStarted = false;
     m_deployment = new QProcess(this);
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.insert("RRS_DEPLOY_SCRIPT", QDir::toNativeSeparators(scriptPath));
+    environment.insert("RRS_DEPLOY_RUN", m_deploymentId);
+    m_deployment->setProcessEnvironment(environment);
     m_deployment->setProcessChannelMode(QProcess::SeparateChannels);
     connect(m_deployment, &QProcess::started, this, [this, payload]() {
         // 凭据仅通过子进程标准输入传递，避免出现在命令行、脚本文件或诊断日志中。
@@ -444,7 +488,7 @@ void RemoteDebugger::deploy(const QString &operation)
     connect(m_deployment, &QProcess::readyReadStandardOutput, this, &RemoteDebugger::readDeploymentOutput);
     connect(m_deployment, &QProcess::readyReadStandardError, this, [this]() {
         m_deploymentErrors += m_deployment->readAllStandardError();
-        m_deploymentErrors = m_deploymentErrors.right(8192);
+        m_deploymentErrors.truncate(8192);
     });
     connect(m_deployment, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this](int, QProcess::ExitStatus) {
         finishDeployment();
@@ -452,11 +496,12 @@ void RemoteDebugger::deploy(const QString &operation)
     connect(m_deployment, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) finishDeployment();
     });
-    setRemoteStatus("正在连接主机 " + server + "…");
-    Diagnostics::event("remote.process_start", {{"run", m_deploymentId}, {"server", server}, {"installer", installer}, {"operation", operation}});
+    setRemoteStatus("正在启动本机部署脚本…");
+    Diagnostics::event("remote.process_start", {{"run", m_deploymentId}, {"script", scriptPath}, {"powershell", powershell}});
     updateRemoteActions();
-    m_deployment->start(powershell, {"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-        QDir::toNativeSeparators(m_deploymentScript->fileName())});
+    // 启动器先统一输出编码，再读取脚本；路径通过进程环境传递，不拼接进 PowerShell 代码。
+    m_deployment->start(powershell, {"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-InputFormat", "Text", "-OutputFormat", "Text", "-EncodedCommand",
+        QString::fromLatin1(encoded.toBase64())});
 }
 
 void RemoteDebugger::readDeploymentOutput()
@@ -468,6 +513,7 @@ void RemoteDebugger::readDeploymentOutput()
         const QByteArray line = m_deploymentOutput.left(newline).trimmed();
         m_deploymentOutput.remove(0, newline + 1);
         const auto object = QJsonDocument::fromJson(line).object();
+        if (object.value("remote_contact").toBool()) m_remoteContactStarted = true;
         const QString type = object.value("type").toString();
         if (type == "result" && object.value("success").isBool() && object.value("message").isString()
             && !object.value("message").toString().trimmed().isEmpty()) {
@@ -486,19 +532,27 @@ void RemoteDebugger::finishDeployment()
 {
     if (!m_deployment) return;
     readDeploymentOutput();
+    if (!m_deploymentOutput.trimmed().isEmpty()) {
+        m_deploymentOutput.append('\n');
+        readDeploymentOutput();
+    }
+    m_deploymentErrors += m_deployment->readAllStandardError();
+    m_deploymentErrors.truncate(8192);
+    const QString detail = deploymentErrorText(m_deploymentErrors).trimmed();
     if (!m_deploymentHasResult) {
-        const QString detail = QString::fromUtf8(m_deploymentErrors).trimmed();
-        setRemoteStatus("部署进程未返回有效结果：" + (detail.isEmpty() ? m_deployment->errorString() : detail)
-            + "\n远程任务可能仍在执行，请检查主机状态后再操作。");
-    } else if (m_deployment->exitStatus() != QProcess::NormalExit || m_deployment->exitCode() != 0) {
+        setRemoteStatus((m_remoteContactStarted ? QString("部署进程未返回有效结果：") : QString("本机部署进程未返回有效结果："))
+            + (detail.isEmpty() ? m_deployment->errorString() : detail)
+            + (m_remoteContactStarted ? "\n已进入远程连接阶段，执行状态未知，请检查主机状态后再操作。" : "\n未进入远程连接阶段。"));
+    } else if (m_remoteContactStarted && (m_deployment->exitStatus() != QProcess::NormalExit || m_deployment->exitCode() != 0)) {
         setRemoteStatus(m_ui->remoteStatus->text() + "\n部署进程异常退出，临时任务或文件可能未完成清理。");
     }
     Diagnostics::event("remote.process_finished", {{"run", m_deploymentId}, {"exit", m_deployment->exitCode()},
         {"exit_status", int(m_deployment->exitStatus())}, {"process_error", m_deployment->exitStatus() == QProcess::NormalExit && m_deployment->exitCode() == 0 ? QString() : m_deployment->errorString()},
-        {"stderr", QString::fromUtf8(m_deploymentErrors)}, {"has_result", m_deploymentHasResult}, {"elapsed_ms", double(m_deploymentElapsed.elapsed())}}, !m_deploymentHasResult || m_deployment->exitCode() != 0);
+        {"stderr", detail}, {"has_result", m_deploymentHasResult}, {"remote_contact", m_remoteContactStarted},
+        {"elapsed_ms", double(m_deploymentElapsed.elapsed())}}, !m_deploymentHasResult || m_deployment->exitCode() != 0);
     m_deployment->deleteLater();
     m_deployment = nullptr;
-    m_deploymentScript.reset();
+    m_deploymentDirectory.reset();
     m_deploymentErrors.clear();
     updateRemoteActions();
     emit deploymentFinished();

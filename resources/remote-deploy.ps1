@@ -9,12 +9,14 @@ $drive = $null
 $stage = $null
 $runRequested = $false
 $keepStage = $false
+$remoteContactStarted = $false
 $jobName = 'RemoteReleaseSync_Deployment'
 $startupName = 'RemoteReleaseSync_RemoteDebugger'
 
 function Send-Status([string]$type, [string]$message, [bool]$success = $false, [object]$details = $null) {
     [Console]::WriteLine((@{ type = $type; message = $message; success = $success; details = $details;
-        time = [DateTime]::UtcNow.ToString('o'); run = if ($null -ne $request) { $request.run } else { '' } } | ConvertTo-Json -Compress -Depth 8))
+        time = [DateTime]::UtcNow.ToString('o'); remote_contact = $remoteContactStarted;
+        run = if ($null -ne $request) { $request.run } else { '' } } | ConvertTo-Json -Compress -Depth 8))
 }
 
 function Get-OwnedTask([string]$name) {
@@ -58,6 +60,7 @@ try {
         $domain = if ($parts[0] -eq '.') { [string]$request.server } else { $parts[0] }
         $user = $parts[1]
     } elseif ($account.Contains('@')) { $domain = '' }
+    $remoteContactStarted = $true
     Send-Status 'progress' '正在使用已保存凭据连接远程任务计划…'
     $scheduler = New-Object -ComObject 'Schedule.Service'
     $scheduler.Connect([string]$request.server, $user, $domain, [string]$request.password)

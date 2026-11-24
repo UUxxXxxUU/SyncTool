@@ -52,6 +52,7 @@
 #include <QTabBar>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTemporaryFile>
 #include <QVBoxLayout>
 #include <QTextBrowser>
 #include <QThread>
@@ -214,7 +215,7 @@ private slots:
             QApplication::setFont(QFont("Microsoft YaHei", 10));
         }
         QApplication::setWindowIcon(QIcon(":/icons/app_32.png"));
-        QApplication::setApplicationVersion("1.1.4");
+        QApplication::setApplicationVersion("1.1.5");
         QSettings settings(startupKey, QSettings::NativeFormat);
         m_hadStartup = settings.contains("RemoteReleaseSync");
         m_originalStartup = settings.value("RemoteReleaseSync").toString();
@@ -234,7 +235,8 @@ private slots:
         Diagnostics::stop();
         const QString logRoot = qEnvironmentVariable("SYNC_QA_LOG_DIR");
         if (!logRoot.isEmpty()) {
-            const QString destination = logRoot + '/' + QString::fromLatin1(QTest::currentTestFunction());
+            const QString data = QString::fromLatin1(QTest::currentDataTag());
+            const QString destination = logRoot + '/' + QString::fromLatin1(QTest::currentTestFunction()) + (data.isEmpty() ? QString() : '/' + data);
             QVERIFY(QDir().mkpath(destination));
             const QDir source(m_temp->path() + "/diagnostics/Logs");
             for (const QString &name : source.entryList({"*.log"}, QDir::Files)) QVERIFY(QFile::copy(source.filePath(name), destination + '/' + name));
@@ -1322,6 +1324,142 @@ private slots:
         QVERIFY(!dialog.findChild<QPushButton *>("installRemoteButton")->isEnabled());
     }
 
+    void remoteDeploymentButtonsLaunchRealScript_data()
+    {
+        QTest::addColumn<QString>("buttonName");
+        QTest::addColumn<bool>("unicodePath");
+        for (const QString &button : {QString("installRemoteButton"), QString("enableRemoteStartupButton"), QString("disableRemoteStartupButton")}) {
+            QTest::newRow(qPrintable(button + "-ascii")) << button << false;
+            QTest::newRow(qPrintable(button + "-unicode")) << button << true;
+        }
+    }
+
+    void remoteDeploymentButtonsLaunchRealScript()
+    {
+        QFETCH(QString, buttonName);
+        QFETCH(bool, unicodePath);
+        struct RestoreEnvironment {
+            QByteArray temp = qgetenv("TEMP"), tmp = qgetenv("TMP");
+            ~RestoreEnvironment() { if (temp.isNull()) qunsetenv("TEMP"); else qputenv("TEMP", temp); if (tmp.isNull()) qunsetenv("TMP"); else qputenv("TMP", tmp); }
+        } environment;
+        const QString temporary = root() + (unicodePath ? "/中文 临时'目录" : "/temporary");
+        QVERIFY(QDir().mkpath(temporary));
+        QVERIFY(qputenv("TEMP", QDir::toNativeSeparators(temporary).toLocal8Bit()));
+        QVERIFY(qputenv("TMP", QDir::toNativeSeparators(temporary).toLocal8Bit()));
+        QCOMPARE(QDir::cleanPath(QDir::tempPath()), QDir::cleanPath(temporary));
+        RemoteDebugger dialog;
+        HostEntry host;
+        host.id = "qa-local-launch"; host.name = "本机脚本启动验证";
+        host.sharePath = "//127.0.0.1/QA-unused"; host.username = "qa-unused"; host.password = "QA-stdin-only-秘密";
+        dialog.setHosts({host}, 0);
+        auto *versions = dialog.findChild<QComboBox *>("debuggerVersion");
+        auto *architectures = dialog.findChild<QComboBox *>("debuggerArchitecture");
+        QVERIFY(versions && architectures);
+        // 无效版本在脚本连接主机前被拒绝，可安全验证真实按钮和完整的本机进程链路。
+        versions->setItemData(versions->currentIndex(), 0);
+        const QString settingKey = "remoteTools/installers/VS_RemoteTools_" + versions->currentText().section(' ', -1) + '_' + architectures->currentText();
+        struct RestoreSetting {
+            QString key; bool present; QVariant value;
+            ~RestoreSetting() { QSettings settings; if (present) settings.setValue(key, value); else settings.remove(key); }
+        } setting{settingKey, QSettings().contains(settingKey), QSettings().value(settingKey)};
+        const QString installer = root() + "/QA-unused.exe";
+        QVERIFY(writeFile(installer, "not executed"));
+        QSettings().setValue(settingKey, installer);
+        dialog.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+        QSignalSpy finished(&dialog, &RemoteDebugger::deploymentFinished);
+        auto *button = dialog.findChild<QPushButton *>(buttonName);
+        QVERIFY(button && button->isEnabled());
+        QTest::mouseClick(button, Qt::LeftButton);
+        QVERIFY(dialog.isDeploying());
+        QVERIFY(!dialog.m_deployment->arguments().join(' ').contains(host.password));
+        const auto artifacts = QDir(temporary).entryList({"rrs-deploy-*"}, QDir::AllEntries | QDir::NoDotAndDotDot);
+        QCOMPARE(artifacts.size(), 1);
+        const QString artifact = QDir(temporary).filePath(artifacts.first());
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 15000);
+        QVERIFY(!dialog.isDeploying());
+        QVERIFY(!QFileInfo::exists(artifact));
+        const QString status = dialog.findChild<QLabel *>("remoteStatus")->text();
+        QVERIFY2(status.contains("版本或架构无效"), qPrintable(status));
+        QVERIFY(!status.contains(QChar::ReplacementCharacter));
+        QVERIFY(!status.contains("CommandNotFoundException"));
+        QVERIFY(!status.contains("远程任务可能仍在执行"));
+        QVERIFY(button->isEnabled());
+        const QString screenshots = qEnvironmentVariable("SYNC_QA_SCREENSHOTS");
+        if (!screenshots.isEmpty()) { QVERIFY(QDir().mkpath(screenshots)); QVERIFY(dialog.grab().save(screenshots + '/' + buttonName + (unicodePath ? "-unicode.png" : "-ascii.png"))); }
+    }
+
+    void remoteDeploymentLocalFailuresRemainReadable_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        QTest::addColumn<QByteArray>("contents");
+        QTest::addColumn<QString>("expected");
+        QTest::addColumn<bool>("hasResult");
+        QTest::newRow("missing-file") << QString("missing") << QByteArray() << QString("本机部署脚本启动失败，未连接远程主机") << true;
+        QTest::newRow("locked-file") << QString("locked") << QByteArray("throw 'must not execute'") << QString("本机部署脚本启动失败，未连接远程主机") << true;
+        QTest::newRow("controller-exception") << QString("normal") << QString("throw '中文控制脚本异常'").toUtf8() << QString("中文控制脚本异常") << true;
+        QTest::newRow("stderr-without-result") << QString("normal") << QString("[Console]::Error.Write('中文错误，不带换行'); exit 23").toUtf8() << QString("中文错误，不带换行") << false;
+        QTest::newRow("remote-stage-without-result") << QString("remote") << QByteArray("[Console]::WriteLine('{\"type\":\"progress\",\"remote_contact\":true,\"message\":\"QA remote stage\"}'); exit 19") << QString("已进入远程连接阶段，执行状态未知") << false;
+        QTest::newRow("result-without-newline") << QString("normal") << QString("[Console]::Write('{\"type\":\"result\",\"success\":true,\"message\":\"中文回执，不带换行\"}')").toUtf8() << QString("中文回执，不带换行") << true;
+    }
+
+    void remoteDeploymentLocalFailuresRemainReadable()
+    {
+        QFETCH(QString, scenario);
+        QFETCH(QByteArray, contents);
+        QFETCH(QString, expected);
+        QFETCH(bool, hasResult);
+        RemoteDebugger dialog;
+        dialog.m_deploymentId = "qa-local-failure";
+        dialog.m_deploymentElapsed.start();
+        dialog.m_deploymentDirectory = std::make_unique<QTemporaryDir>(root() + "/中文 启动'诊断-XXXXXX");
+        QVERIFY(dialog.m_deploymentDirectory->isValid());
+        const QString directory = dialog.m_deploymentDirectory->path();
+        QString path = directory + "/controller.ps1";
+        QFile locked;
+        if (scenario == "locked") {
+            path = root() + "/中文 被占用'脚本.ps1";
+            locked.setFileName(path);
+            QVERIFY(locked.open(QIODevice::ReadWrite));
+            QCOMPARE(locked.write(QByteArray::fromHex("efbbbf") + contents), qint64(contents.size() + 3));
+            QVERIFY(locked.flush());
+        } else if (scenario != "missing") {
+            QVERIFY(writeFile(path, QByteArray::fromHex("efbbbf") + contents));
+        }
+        QSignalSpy finished(&dialog, &RemoteDebugger::deploymentFinished);
+        dialog.startDeploymentProcess(path, "{\"operation\":\"qa-unused\"}");
+        QVERIFY(dialog.isDeploying());
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 15000);
+        locked.close();
+        QVERIFY(!dialog.isDeploying());
+        QVERIFY(!QFileInfo::exists(directory));
+        QCOMPARE(dialog.m_deploymentHasResult, hasResult);
+        QCOMPARE(dialog.m_remoteContactStarted, scenario == "remote");
+        const QString status = dialog.findChild<QLabel *>("remoteStatus")->text();
+        QVERIFY2(status.contains(expected), qPrintable(status));
+        QVERIFY(!status.contains(QChar::ReplacementCharacter));
+        QVERIFY(!status.contains("????"));
+        QVERIFY(!status.contains("临时任务或文件可能未完成清理"));
+        if (!hasResult && scenario != "remote") QVERIFY(status.contains("未进入远程连接阶段"));
+    }
+
+    void remoteDeploymentMissingPowerShellCleansPreparedDirectory()
+    {
+        RemoteDebugger dialog;
+        dialog.m_deploymentDirectory = std::make_unique<QTemporaryDir>(root() + "/missing-powershell-XXXXXX");
+        QVERIFY(dialog.m_deploymentDirectory->isValid());
+        const QString directory = dialog.m_deploymentDirectory->path();
+        const QString path = directory + "/controller.ps1";
+        QVERIFY(writeFile(path, "not executed"));
+        const QByteArray systemRoot = qgetenv("SystemRoot");
+        QVERIFY(qputenv("SystemRoot", root().toLocal8Bit()));
+        dialog.startDeploymentProcess(path, "{}");
+        if (systemRoot.isNull()) qunsetenv("SystemRoot"); else qputenv("SystemRoot", systemRoot);
+        QVERIFY(!dialog.isDeploying());
+        QVERIFY(!QFileInfo::exists(directory));
+        QVERIFY(dialog.findChild<QLabel *>("remoteStatus")->text().contains("未找到 Windows PowerShell"));
+    }
+
     void logRetentionRemovesOnlyManagedFiles()
     {
         const QString dir = root() + "/test logs";
@@ -1452,7 +1590,7 @@ private slots:
     void updateProgressSurvivesDialogReopening()
     {
         auto main = window();
-        main->m_availableUpdateVersion = "1.1.4";
+        main->m_availableUpdateVersion = "1.1.5";
         const QString manifest = qEnvironmentVariable("SYNC_QA_MANIFEST_PATH");
         if (!manifest.isEmpty()) {
             QFile file(manifest);

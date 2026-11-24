@@ -17,7 +17,7 @@ int main(int argc, char *argv[])
     Appearance::prepareApplication();
     QApplication app(argc, argv);
     app.setApplicationName("RemoteReleaseSync");
-    app.setApplicationVersion("1.1.4");
+    app.setApplicationVersion("1.1.5");
     app.setOrganizationName("LocalTools");
     app.setQuitOnLastWindowClosed(false);
 

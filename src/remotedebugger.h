@@ -11,6 +11,7 @@ class QNetworkAccessManager;
 class QNetworkReply;
 class QCloseEvent;
 class QProcess;
+class QTemporaryDir;
 class QTemporaryFile;
 class QTimer;
 namespace Ui { class RemoteDebugger; }
@@ -46,6 +47,7 @@ private:
     void completeRequest();
     void finishDownload(const QString &error, const QString &temporaryPath = {});
     void deploy(const QString &operation);
+    void startDeploymentProcess(const QString &scriptPath, const QByteArray &payload);
     void readDeploymentOutput();
     void finishDeployment();
     void updateRemoteActions();
@@ -62,10 +64,11 @@ private:
     int m_redirects = 0;
     QVector<HostEntry> m_hosts;
     QProcess *m_deployment = nullptr;
-    std::unique_ptr<QTemporaryFile> m_deploymentScript;
+    std::unique_ptr<QTemporaryDir> m_deploymentDirectory;
     QByteArray m_deploymentOutput;
     QByteArray m_deploymentErrors;
     bool m_deploymentHasResult = false;
+    bool m_remoteContactStarted = false;
     QString m_deploymentId;
     QElapsedTimer m_deploymentElapsed;
     QString m_downloadId;
