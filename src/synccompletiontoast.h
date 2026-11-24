@@ -3,7 +3,7 @@
 #include <memory>
 #include <QFrame>
 #include <QPointer>
-#include <QQueue>
+#include <QVariantAnimation>
 #include <QTimer>
 
 namespace Ui { class SyncCompletionToast; }
@@ -18,17 +18,19 @@ public:
     explicit SyncCompletionToast(QWidget *anchor);
     ~SyncCompletionToast() override;
 
-    void enqueue(const QString &hostName);
+    enum Kind { Information, Success, Warning };
+    void present(const QString &title, const QString &detail, Kind kind);
     void dismiss();
+
+signals:
+    void presented(const QString &title, const QString &detail);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
-    void showNext();
-
     std::unique_ptr<Ui::SyncCompletionToast> m_ui;
     QPointer<QWidget> m_anchor;
-    QQueue<QString> m_pending;
+    QVariantAnimation m_glow;
     QTimer m_timer;
 };

@@ -5,9 +5,11 @@
 
 #include <atomic>
 #include <memory>
+#include <QByteArray>
 #include <QObject>
 #include <QElapsedTimer>
 #include <QSet>
+#include <QJsonObject>
 #include <QStringList>
 
 class SyncWorker : public QObject
@@ -41,12 +43,15 @@ public:
         qint64 totalCopyBytes = 0;
         QString detail;
         QStringList extraFiles;
+        QByteArray diagnosticSignature;
     };
 
     SyncWorker(HostEntry host, QString releaseDir, QStringList fileTypes, bool performCopy,
                QVector<SyncRule> rules = {}, QObject *parent = nullptr, QStringList exclusions = {});
     void emitProgress(int percent, const QString &detail);
     void emitRecentFiles(const QStringList &files, const QString &title);
+    void recordDiagnostic(const char *name, const QJsonObject &fields, bool warning = false);
+    void flushDiagnostics(bool force = true);
     bool isCancelled() const;
     std::shared_ptr<std::atomic<bool>> cancellationFlag() const;
     static void releaseShareConnections();
@@ -65,7 +70,8 @@ signals:
                       int mismatchPercent,
                       const QString &statusText,
                       const QString &detail,
-                      const QString &detailTooltip);
+                      const QString &detailTooltip,
+                      const QByteArray &displaySignature);
     void finished(const QString &hostId);
 
 private:
@@ -80,6 +86,7 @@ private:
 
     QString normalizedReleaseDir() const;
     QString normalizedRemoteDir() const;
+    QByteArray diagnosticContext() const;
 
     HostEntry m_host;
     QString m_releaseDir;
@@ -91,6 +98,15 @@ private:
     QElapsedTimer m_elapsed;
     int m_loggedProgress = -1;
     QSet<QString> m_loggedFiles;
+    struct DeferredDiagnostic { QByteArray name; QJsonObject fields; bool warning; };
+    QVector<DeferredDiagnostic> m_deferredDiagnostics;
+    int m_deferredBytes = 0;
+    bool m_backgroundLogging = false;
+    bool m_detailedLogging = true;
+    bool m_copyAttempted = false;
+    QString m_diagnosticKey;
+    QByteArray m_diagnosticConfiguration;
+    QByteArray m_comparisonSignature;
     bool m_performCopy = false;
     std::shared_ptr<std::atomic<bool>> m_cancelled;
 };

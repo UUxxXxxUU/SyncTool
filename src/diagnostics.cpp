@@ -7,8 +7,11 @@
 #include <QAction>
 #include <QActionEvent>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QHash>
 #include <QFile>
 #include <QFileDialog>
 #include <QFocusEvent>
@@ -57,6 +60,30 @@ bool started = false;
 QString session;
 QString userAction;
 QStringList secrets;
+struct BackgroundRecord
+{
+    QByteArray context;
+    QByteArray outcome;
+    QJsonObject fields;
+    QElapsedTimer summaryTimer;
+    QDateTime since;
+    QDateTime lastSeen;
+    QString lastRun;
+    qint64 repeats = 0;
+    bool warning = false;
+};
+std::mutex backgroundMutex;
+QHash<QString, BackgroundRecord> backgroundRecords;
+QJsonObject backgroundSummary(const BackgroundRecord &entry, const QString &reason)
+{
+    QJsonObject result = entry.fields;
+    result.insert("repeats", double(entry.repeats));
+    result.insert("since_utc", entry.since.toString(Qt::ISODateWithMs));
+    result.insert("last_seen_utc", entry.lastSeen.toString(Qt::ISODateWithMs));
+    result.insert("last_run", entry.lastRun);
+    result.insert("reason", reason);
+    return result;
+}
 quint64 sequence = 0;
 QtMessageHandler previousMessageHandler = nullptr;
 QString redact(QString text);
@@ -210,7 +237,9 @@ public:
         }
         if (auto *status = qobject_cast<QStatusBar *>(object)) {
             connect(status, &QStatusBar::messageChanged, this, [status](const QString &message) {
-                if (!message.isEmpty()) Diagnostics::event("ui.status", {{"window", status->window()->windowTitle()}, {"message", message}});
+                if (message.isEmpty() || status->property("diagnosticsLastStatus").toString() == message) return;
+                status->setProperty("diagnosticsLastStatus", message);
+                Diagnostics::event("ui.status", {{"window", status->window()->windowTitle()}, {"message", message}});
             });
         }
     }
@@ -324,6 +353,7 @@ void Diagnostics::start(const QString &diagnosticRoot)
         session = QUuid::createUuid().toString(QUuid::WithoutBraces);
         sequence = 0;
     }
+    { std::lock_guard<std::mutex> lock(backgroundMutex); backgroundRecords.clear(); }
     QDir().mkpath(directory() + "/Logs");
     const QString version = QCoreApplication::applicationVersion();
     event("app.start", {{"version", version}, {"exe", QCoreApplication::applicationFilePath()}, {"cwd", QDir::currentPath()},
@@ -361,6 +391,14 @@ void Diagnostics::start(const QString &diagnosticRoot)
 void Diagnostics::stop()
 {
     { std::lock_guard<std::mutex> lock(logMutex); if (!started) return; }
+    QVector<QJsonObject> summaries;
+    {
+        std::lock_guard<std::mutex> lock(backgroundMutex);
+        for (const auto &entry : backgroundRecords)
+            if (entry.warning && entry.repeats) summaries.append(backgroundSummary(entry, "shutdown"));
+        backgroundRecords.clear();
+    }
+    for (const auto &summary : summaries) event("sync.background_repeat", summary, true);
     record("app.exit");
     qInstallMessageHandler(previousMessageHandler);
     previousMessageHandler = nullptr;
@@ -420,6 +458,53 @@ void Diagnostics::record(const char *event, const QString &fields, bool warning)
 void Diagnostics::event(const char *name, const QJsonObject &fields, bool warning)
 {
     record(name, QString::fromUtf8(QJsonDocument(fields).toJson(QJsonDocument::Compact)), warning);
+}
+
+bool Diagnostics::backgroundState(const QString &key, const QByteArray &context, const QJsonObject &outcome,
+                                  const QJsonObject &fields, bool warning)
+{
+    const auto signature = QCryptographicHash::hash(QJsonDocument(outcome).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256);
+    QJsonObject summary, changed;
+    bool report = false;
+    {
+        std::lock_guard<std::mutex> lock(backgroundMutex);
+        auto found = backgroundRecords.find(key);
+        const bool fresh = found == backgroundRecords.end() || found->context != context || found->outcome != signature;
+        const QDateTime now = QDateTime::currentDateTimeUtc();
+        if (fresh) {
+            if (found != backgroundRecords.end() && found->warning && found->repeats) summary = backgroundSummary(*found, "state_changed");
+            changed = fields;
+            changed.insert("result", outcome);
+            if (found != backgroundRecords.end() && found->warning && !warning && !fields.value("cancelled").toBool()) changed.insert("recovered", true);
+            BackgroundRecord next;
+            next.context = context; next.outcome = signature; next.fields = changed;
+            next.warning = warning; next.since = next.lastSeen = now; next.summaryTimer.start();
+            backgroundRecords.insert(key, next);
+            report = true;
+        } else {
+            ++found->repeats;
+            found->lastSeen = now;
+            found->lastRun = fields.value("run").toString();
+            // 健康的空闲轮询不写心跳；持续异常每五分钟汇总，状态变化时也保留尚未汇总的次数。
+            if (found->warning && found->summaryTimer.elapsed() >= 5 * 60 * 1000) {
+                summary = backgroundSummary(*found, "interval");
+                found->repeats = 0;
+                found->since = now;
+                found->summaryTimer.restart();
+            }
+        }
+    }
+    // 日志写入会获取 logMutex，不能在持有后台状态锁时执行。
+    if (!summary.isEmpty()) event("sync.background_repeat", summary, true);
+    if (report) event("sync.background_state", changed, warning);
+    return report;
+}
+
+bool Diagnostics::backgroundFailure(const QString &key, const QByteArray &context)
+{
+    std::lock_guard<std::mutex> lock(backgroundMutex);
+    const auto found = backgroundRecords.constFind(key);
+    return found != backgroundRecords.constEnd() && found->warning && found->context == context;
 }
 
 void Diagnostics::rememberSecret(const QString &value)

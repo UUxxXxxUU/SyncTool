@@ -51,8 +51,16 @@ AppConfig ConfigManager::load(const QString &filePath)
     }
 
     const QJsonObject root = document.object();
+    for (const auto &value : root.value("shortcuts").toArray()) {
+        const auto item = value.toObject();
+        const auto action = item.value("action").toString();
+        const auto keys = item.value("keys").toString();
+        if (!action.isEmpty() && !keys.isEmpty())
+            config.shortcuts.append({action, keys, item.value("global").toBool()});
+    }
     config.releaseDir = root.value("releaseDir").toString().trimmed();
     config.autoSync = root.value("autoSync").toBool(true);
+    config.showShortcutFeedback = root.value("showShortcutFeedback").toBool(true);
     config.startWithSystem = root.value("startWithSystem").toBool(false);
     config.checkUpdatesOnStartup = root.value("checkUpdatesOnStartup").toBool(false);
     config.silentUpdate = root.value("silentUpdate").toBool(false);
@@ -143,6 +151,11 @@ AppConfig ConfigManager::load(const QString &filePath)
 bool ConfigManager::save(const QString &filePath, const AppConfig &config, QString *errorMessage)
 {
     QJsonObject root;
+    QJsonArray shortcuts;
+    for (const auto &binding : config.shortcuts)
+        shortcuts.append(QJsonObject{{"action", binding.action}, {"keys", binding.keys}, {"global", binding.global}});
+    root.insert("shortcuts", shortcuts);
+    root.insert("showShortcutFeedback", config.showShortcutFeedback);
     root.insert("releaseDir", config.releaseDir);
     root.insert("autoSync", config.autoSync);
     root.insert("startWithSystem", config.startWithSystem);

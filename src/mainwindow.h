@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <memory>
+#include <QByteArray>
 #include <QColor>
 #include <QCryptographicHash>
 #include <QElapsedTimer>
@@ -43,6 +44,7 @@ class QTimer;
 QT_END_NAMESPACE
 
 class SyncWorker;
+class ShortcutManager;
 class RecentCopyPreview;
 class SyncCompletionToast;
 class RemoteDebugger;
@@ -109,6 +111,7 @@ private:
 
     void setupUi();
     void showPreferences();
+    void applyShortcuts();
     bool applyPreferences(const AppConfig &preferences, QString *errorMessage);
     void updateSettingsSummary();
     void showUsageTips();
@@ -151,7 +154,7 @@ private:
     void collectUiToConfig();
     void refreshTypeList();
     void refreshHostTable();
-    void handleWorkerCopySucceeded(const QString &hostId, const QDateTime &completedUtc, quint64 revision);
+    bool handleWorkerCopySucceeded(const QString &hostId, const QDateTime &completedUtc, quint64 revision);
     void addToReleaseDirHistory(const QString &path);
     void updateHostRow(int row,
                        int state,
@@ -166,7 +169,7 @@ private:
     QVector<int> targetRows() const;
     void copyHostNameFromRow(int row);
     void requestAutoSync(const QString &statusMessage);
-    void startOperations(bool performCopy);
+    void startOperations(bool performCopy, bool backgroundPoll = false, bool fromShortcut = false);
     bool hasRunningWorkers() const;
     void requestWorkerToStop(const QString &hostId);
     void requestWorkersToStop();
@@ -176,6 +179,7 @@ private:
     bool setSystemAutoStartEnabled(bool enabled, QString *errorMessage = nullptr) const;
 
     std::unique_ptr<Ui::MainWindow> m_ui;
+    std::unique_ptr<ShortcutManager> m_shortcuts;
     std::unique_ptr<SyncCompletionToast> m_syncCompletionToast;
     AppConfig m_config;
     QString m_configPath;
@@ -187,6 +191,7 @@ private:
     bool m_isOpeningShare = false;
     bool m_isRefreshingTable = false;
     bool m_pendingSyncAfterCurrentRun = false;
+    bool m_pendingShortcut = false;
     bool m_backgroundTasksPaused = false;
     bool m_isClosing = false;
     bool m_exitFinished = false;
@@ -242,6 +247,8 @@ private:
     RecentCopyPreview *m_copyPreview = nullptr;
 
     QHash<QString, RowWidgets> m_rowWidgets;
+    struct CheckDisplay { quint64 revision = 0; QByteArray signature; };
+    QHash<QString, CheckDisplay> m_checkDisplays;
     QHash<QString, QThread *> m_runningThreads;
     QHash<QString, std::shared_ptr<std::atomic<bool>>> m_cancellationFlags;
     QSet<QString> m_stoppingHostIds;

@@ -47,6 +47,9 @@
     <ClCompile Include="src\syncworker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\shortcutmanager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\appearance.h">
@@ -60,6 +63,7 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\diagnostics.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\shortcutmanager.h"><Filter>Header Files</Filter></ClInclude>
     <QtMoc Include="src\remotedebugger.h"><Filter>Header Files</Filter></QtMoc>
     <ClInclude Include="src\configmanager.h">
       <Filter>Header Files</Filter>

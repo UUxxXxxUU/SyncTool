@@ -70,6 +70,7 @@ private:
     bool m_deploymentHasResult = false;
     bool m_remoteContactStarted = false;
     QString m_deploymentId;
+    QString m_lastDeploymentProgress;
     QElapsedTimer m_deploymentElapsed;
     QString m_downloadId;
     QElapsedTimer m_downloadElapsed;

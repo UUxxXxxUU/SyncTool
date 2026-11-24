@@ -190,6 +190,8 @@
     <ClCompile Include="src\mainwindow.cpp" />
     <ClCompile Include="src\synccompletiontoast.cpp" />
     <ClCompile Include="src\syncworker.cpp" />
+    <ClCompile Include="src\shortcutmanager.cpp" />
+    <ClInclude Include="src\shortcutmanager.h" />
     <ClCompile Include="src\syncplan.cpp" />
   </ItemGroup>
   <ItemGroup>

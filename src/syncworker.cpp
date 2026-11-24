@@ -4,6 +4,8 @@
 #include "diagnostics.h"
 
 #include <QByteArray>
+#include <QCryptographicHash>
+#include <QJsonDocument>
 #include <QDir>
 #include <QDirIterator>
 #include <QElapsedTimer>
@@ -20,6 +22,7 @@
 #include <QSet>
 #include <QThread>
 #include <algorithm>
+#include <functional>
 #include <qdatetime.h>
 
 #ifdef Q_OS_WIN
@@ -326,7 +329,8 @@ bool isShareAccessible(const QString &rootPath)
     return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
-bool connectShare(const QString &fullPath, const QString &username, const QString &password, QString *error)
+bool connectShare(const QString &fullPath, const QString &username, const QString &password, QString *error,
+                  const std::function<void()> &connecting)
 {
     const QString rootPath = uncShareRoot(fullPath);
     if (!rootPath.startsWith("\\\\")) {
@@ -352,6 +356,7 @@ bool connectShare(const QString &fullPath, const QString &username, const QStrin
     const std::wstring passValue = password.toStdWString();
 
     auto tryConnect = [&]() -> DWORD {
+        if (connecting) connecting();
         return WNetAddConnection2W(&resource,
                                    password.isEmpty() ? (username.isEmpty() ? nullptr : L"") : passValue.c_str(),
                                    username.isEmpty() ? nullptr : userValue.c_str(),
@@ -456,12 +461,11 @@ bool runRobocopy(SyncWorker *worker, const QString &localBase,
         if (!batch.files.isEmpty() && batchBytes / batch.files.size() >= 32 * 1024 * 1024) arguments << "/J";
         QProcess process;
         process.setProcessChannelMode(QProcess::MergedChannels);
-        Diagnostics::event("sync.robocopy_start", {{"run", operationId}, {"batch", batchIndex + 1},
+        worker->recordDiagnostic("sync.robocopy_start", {{"run", operationId}, {"batch", batchIndex + 1},
             {"total_batches", batches.size()}, {"arguments", QJsonArray::fromStringList(arguments)}, {"bytes", double(batchBytes)}});
         process.start("robocopy", arguments);
         if (!process.waitForStarted(5000)) {
-            Diagnostics::record("sync.robocopy_start_failed", QString("run=%1 process_error=%2")
-                                .arg(operationId).arg(process.error()), true);
+            worker->recordDiagnostic("sync.robocopy_start_failed", {{"run", operationId}, {"process_error", int(process.error())}}, true);
             *error = QString("无法启动 robocopy：%1").arg(process.errorString());
             return false;
         }
@@ -481,6 +485,7 @@ bool runRobocopy(SyncWorker *worker, const QString &localBase,
         };
         progress();
         while (process.state() != QProcess::NotRunning) {
+            worker->flushDiagnostics(false);
             if (worker->isCancelled()) {
                 process.kill();
                 process.waitForFinished(3000);
@@ -496,11 +501,10 @@ bool runRobocopy(SyncWorker *worker, const QString &localBase,
         output.append(process.readAllStandardOutput());
         if (process.exitStatus() != QProcess::NormalExit || process.exitCode() >= 8) {
             const QString processOutput = QString::fromLocal8Bit(output);
-            Diagnostics::event("sync.robocopy_error_details", {{"run", operationId}, {"batch", batchIndex + 1},
+            worker->recordDiagnostic("sync.robocopy_error_details", {{"run", operationId}, {"batch", batchIndex + 1},
                 {"exit", process.exitCode()}, {"output", processOutput}, {"error", process.errorString()}}, true);
-            Diagnostics::record("sync.robocopy_failed", QString("run=%1 batch=%2 exit=%3 win32=%4")
-                                .arg(operationId).arg(batchIndex + 1).arg(process.exitCode())
-                                .arg(extractRobocopyErrorCode(processOutput)), true);
+            worker->recordDiagnostic("sync.robocopy_failed", {{"run", operationId}, {"batch", batchIndex + 1},
+                {"exit", process.exitCode()}, {"win32", extractRobocopyErrorCode(processOutput)}}, true);
             *error = QString("%1：%2").arg(nativePath(scope), process.exitStatus() == QProcess::NormalExit
                 ? describeRobocopyFailure(process.exitCode(), processOutput)
                 : QString("robocopy 异常退出：%1").arg(outputTail(processOutput)));
@@ -508,7 +512,7 @@ bool runRobocopy(SyncWorker *worker, const QString &localBase,
             return false;
         }
         for (const PendingCopy &copy : batch.files) processed.prepend(copy.relativePath);
-        Diagnostics::event("sync.robocopy_done", {{"run", operationId}, {"batch", batchIndex + 1}, {"exit", process.exitCode()},
+        worker->recordDiagnostic("sync.robocopy_done", {{"run", operationId}, {"batch", batchIndex + 1}, {"exit", process.exitCode()},
             {"files", batch.files.size()}, {"elapsed_ms", double(elapsed.elapsed())}});
         completedBytes += batchBytes;
         worker->emitRecentFiles(processed, QString("本轮处理记录（共 %1 个，最新在前）").arg(processed.size()));
@@ -523,6 +527,7 @@ SyncWorker::ComparisonSummary compareFiles(const QHash<QString, SyncWorker::Loca
                                            const QString &remoteRoot)
 {
     SyncWorker::ComparisonSummary summary;
+    QMap<QString, QByteArray> differences;
     summary.localCount = localFiles.size();
 
     // Windows 共享路径忽略大小写匹配，原始路径仍用于复制和显示。
@@ -541,6 +546,7 @@ SyncWorker::ComparisonSummary compareFiles(const QHash<QString, SyncWorker::Loca
         const SyncWorker::LocalFile &local = it.value();
         const auto remoteIt = remotePaths.constFind(pathKey);
         if (remoteIt == remotePaths.constEnd()) {
+            differences.insert(pathKey, QJsonDocument(QJsonArray{"missing", QString::number(local.size), QString::number(local.modifiedMs)}).toJson(QJsonDocument::Compact));
             summary.missingCount++;
             summary.totalCopyBytes += local.size;
             if (pendingCopies != nullptr) {
@@ -559,6 +565,8 @@ SyncWorker::ComparisonSummary compareFiles(const QHash<QString, SyncWorker::Loca
             summary.matchingCount++;
         } else {
             summary.outdatedCount++;
+            differences.insert(pathKey, QJsonDocument(QJsonArray{"outdated", QString::number(local.size), QString::number(local.modifiedMs),
+                QString::number(remote.size), QString::number(remote.modifiedMs)}).toJson(QJsonDocument::Compact));
             summary.totalCopyBytes += local.size;
             if (pendingCopies != nullptr) {
                 PendingCopy copy;
@@ -573,12 +581,20 @@ SyncWorker::ComparisonSummary compareFiles(const QHash<QString, SyncWorker::Loca
 
     for (auto it = remoteFiles.constBegin(); it != remoteFiles.constEnd(); ++it) {
         if (!localPaths.contains(it.key().toCaseFolded())) {
+            differences.insert(it.key().toCaseFolded(), QJsonDocument(QJsonArray{"extra", QString::number(it.value().size),
+                QString::number(it.value().modifiedMs)}).toJson(QJsonDocument::Compact));
             summary.extraCount++;
             summary.extraFiles.append(it.value().relativePath);
         }
     }
 
     std::sort(summary.extraFiles.begin(), summary.extraFiles.end());
+    QCryptographicHash digest(QCryptographicHash::Sha256);
+    for (auto it = differences.constBegin(); it != differences.constEnd(); ++it) {
+        digest.addData(QJsonDocument(QJsonArray{it.key()}).toJson(QJsonDocument::Compact));
+        digest.addData(it.value());
+    }
+    summary.diagnosticSignature = digest.result();
     summary.detail = summaryText(summary);
     return summary;
 }
@@ -629,10 +645,39 @@ std::shared_ptr<std::atomic<bool>> SyncWorker::cancellationFlag() const
     return m_cancelled;
 }
 
+QByteArray SyncWorker::diagnosticContext() const
+{
+    return QCryptographicHash::hash(m_diagnosticConfiguration + m_comparisonSignature, QCryptographicHash::Sha256);
+}
+
+void SyncWorker::recordDiagnostic(const char *name, const QJsonObject &fields, bool warning)
+{
+    if (!name || !*name) return;
+    QJsonObject context = fields;
+    context.insert("host", m_host.id);
+    if (!context.contains("run")) context.insert("run", m_operationId);
+    if (m_detailedLogging) { Diagnostics::event(name, context, warning); return; }
+    context.insert("observed_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    if (!context.contains("elapsed_ms")) context.insert("elapsed_ms", double(m_elapsed.elapsed()));
+    m_deferredBytes += QJsonDocument(context).toJson(QJsonDocument::Compact).size();
+    m_deferredDiagnostics.append({name, context, warning});
+    // 小型重复轮询可整轮丢弃；大批量上下文及时落盘，避免缓存过大或故障时丢失诊断线索。
+    if (m_deferredDiagnostics.size() >= 64 || m_deferredBytes >= 512 * 1024) flushDiagnostics();
+}
+
+void SyncWorker::flushDiagnostics(bool force)
+{
+    if (m_detailedLogging || (!force && m_elapsed.elapsed() < 30000)) return;
+    m_detailedLogging = true;
+    for (const auto &entry : m_deferredDiagnostics) Diagnostics::event(entry.name.constData(), entry.fields, entry.warning);
+    m_deferredDiagnostics.clear();
+    m_deferredBytes = 0;
+}
+
 void SyncWorker::emitProgress(int percent, const QString &detail)
 {
     if (percent == 100 || m_loggedProgress < 0 || percent / 10 != m_loggedProgress / 10) {
-        Diagnostics::event("sync.progress", {{"run", m_operationId}, {"host", m_host.id}, {"percent", percent}, {"detail", detail}});
+        recordDiagnostic("sync.progress", {{"run", m_operationId}, {"host", m_host.id}, {"percent", percent}, {"detail", detail}});
         m_loggedProgress = percent;
     }
     emit progressChanged(m_host.id, percent, detail);
@@ -642,7 +687,7 @@ void SyncWorker::emitRecentFiles(const QStringList &files, const QString &title)
 {
     QStringList added;
     for (const auto &file : files) if (!m_loggedFiles.contains(file)) { m_loggedFiles.insert(file); added.append(file); }
-    Diagnostics::event("sync.files", {{"run", m_operationId}, {"host", m_host.id}, {"title", title},
+    recordDiagnostic("sync.files", {{"run", m_operationId}, {"host", m_host.id}, {"title", title},
         {"count", files.size()}, {"added", QJsonArray::fromStringList(added)}});
     emit recentFilesChanged(m_host.id, files, title);
 }
@@ -653,16 +698,30 @@ void SyncWorker::emitState(int state,
                            const QString &detail,
                            const QString &detailTooltip)
 {
-    Diagnostics::event(state != Checking && state != Syncing ? "sync.result" : "sync.stage", {{"run", m_operationId},
+    const bool terminal = state != Checking && state != Syncing && state != Stopping;
+    const bool warning = state == Error || state == Disconnected;
+    const QJsonObject result{{"state", QString::fromLatin1(QMetaEnum::fromType<VisualState>().valueToKey(state))},
+        {"difference_pct", mismatchPercentValue}, {"status", statusText}, {"detail", detail}, {"tooltip", detailTooltip}};
+    if (m_backgroundLogging && terminal) {
+        const bool changed = Diagnostics::backgroundState(m_diagnosticKey, diagnosticContext(), result,
+            {{"run", m_operationId}, {"host", m_host.id}, {"local", normalizedReleaseDir()}, {"remote", normalizedRemoteDir()},
+                {"trigger", "background_poll"}, {"cancelled", isCancelled()}}, warning);
+        if ((warning && changed) || (m_copyAttempted && !warning) || state == Stopped) flushDiagnostics();
+    }
+    if (!terminal || m_detailedLogging) recordDiagnostic(terminal ? "sync.result" : "sync.stage", {{"run", m_operationId},
         {"host", m_host.id}, {"state", QString::fromLatin1(QMetaEnum::fromType<VisualState>().valueToKey(state))},
-        {"difference_pct", mismatchPercentValue}, {"status", statusText}, {"detail", detail}, {"tooltip", detailTooltip}}, state == Error || state == Disconnected);
-    emit stateChanged(m_host.id, state, mismatchPercentValue, statusText, detail, detailTooltip);
+        {"difference_pct", mismatchPercentValue}, {"status", statusText}, {"detail", detail}, {"tooltip", detailTooltip}}, warning);
+    const QByteArray displaySignature = terminal ? QCryptographicHash::hash(m_diagnosticConfiguration + m_comparisonSignature
+        + QJsonDocument(result).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256) : QByteArray();
+    emit stateChanged(m_host.id, state, mismatchPercentValue, statusText, detail, detailTooltip, displaySignature);
 }
 
 void SyncWorker::emitFinished()
 {
-    Diagnostics::event("sync.finished", {{"run", m_operationId}, {"host", m_host.id},
+    if (m_detailedLogging) recordDiagnostic("sync.finished", {{"run", m_operationId}, {"host", m_host.id},
         {"elapsed_ms", double(m_elapsed.isValid() ? m_elapsed.elapsed() : 0)}, {"cancelled", isCancelled()}});
+    m_deferredDiagnostics.clear();
+    m_deferredBytes = 0;
     emit finished(m_host.id);
 }
 
@@ -709,10 +768,23 @@ void SyncWorker::process()
     const QString remoteRoot = normalizedRemoteDir();
     const QString displayName = hostDisplayName(m_host);
     Diagnostics::rememberSecret(m_host.password);
-    Diagnostics::event("sync.start", {{"run", m_operationId}, {"last_action", m_parentAction}, {"host", m_host.id}, {"name", m_host.name},
+    m_backgroundLogging = property("diagnosticsBackground").toBool();
+    m_detailedLogging = !m_backgroundLogging;
+    if (m_backgroundLogging) m_parentAction.clear();
+    m_diagnosticKey = property("diagnosticsScope").toString() + "/host/" + m_host.id;
+    QJsonArray diagnosticRules;
+    for (const auto &rule : m_rules) diagnosticRules.append(QJsonObject{{"path", rule.relativePath},
+        {"types", QJsonArray::fromStringList(rule.fileTypes)}, {"enabled", rule.enabled}});
+    const QJsonObject configuration{{"local", localRoot}, {"remote", remoteRoot}, {"user", m_host.username}, {"password", m_host.password},
+        {"name", m_host.name}, {"copy", m_performCopy}, {"types", QJsonArray::fromStringList(m_fileTypes)},
+        {"rules", diagnosticRules}, {"exclusions", QJsonArray::fromStringList(m_exclusions)}};
+    // 凭据只参与内存中的配置摘要，不写入日志；同一报错在配置变化后必须重新记录。
+    m_diagnosticConfiguration = QCryptographicHash::hash(QJsonDocument(configuration).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256);
+    recordDiagnostic("sync.start", {{"run", m_operationId}, {"last_action", m_parentAction}, {"host", m_host.id}, {"name", m_host.name},
         {"source", property("diagnosticsSourceClass").toString()}, {"source_control", property("diagnosticsSourceObject").toString()},
         {"local", localRoot}, {"remote", remoteRoot}, {"user", m_host.username}, {"copy", m_performCopy},
-        {"types", QJsonArray::fromStringList(m_fileTypes)}, {"rules", m_rules.size()}, {"exclusions", QJsonArray::fromStringList(m_exclusions)}});
+        {"types", QJsonArray::fromStringList(m_fileTypes)}, {"rules", m_rules.size()}, {"exclusions", QJsonArray::fromStringList(m_exclusions)},
+        {"trigger", m_backgroundLogging ? "background_poll" : "interactive_or_startup"}});
 
     if (localRoot.isEmpty() || !QFileInfo::exists(localRoot)) {
         finishWithError(Error, "本地目录无效", "请先配置有效的本地 release 目录");
@@ -726,15 +798,21 @@ void SyncWorker::process()
     emitState(Checking,
               0,
               "检查中",
-              QString("%1：正在连接共享目录").arg(displayName));
+              QString("%1：正在检查共享目录").arg(displayName));
 
 #ifdef Q_OS_WIN
     QString connectionError;
-    if (!connectShare(remoteRoot, m_host.username, m_host.password, &connectionError)) {
+    int connectionAttempts = 0;
+    if (!connectShare(remoteRoot, m_host.username, m_host.password, &connectionError, [&]() {
+        ++connectionAttempts;
+        recordDiagnostic("sync.share_connecting", {{"share", remoteRoot}, {"attempt", connectionAttempts}});
+        emitState(Checking, 0, "检查中", QString("%1：正在连接共享目录").arg(displayName));
+    })) {
         finishWithError(Disconnected, "断线", QString("%1：%2").arg(displayName, connectionError));
         return;
     }
-    Diagnostics::event("sync.share_connected", {{"run", m_operationId}, {"host", m_host.id}, {"share", remoteRoot}, {"elapsed_ms", double(m_elapsed.elapsed())}});
+    recordDiagnostic("sync.share_connected", {{"run", m_operationId}, {"host", m_host.id}, {"share", remoteRoot},
+        {"connection_attempts", connectionAttempts}, {"elapsed_ms", double(m_elapsed.elapsed())}});
 #else
     finishWithError(Error, "平台不支持", "当前版本仅支持 Windows 下的 robocopy 同步");
     return;
@@ -756,6 +834,7 @@ void SyncWorker::process()
         return;
     }
 
+    emitState(Checking, 0, "检查中", QString("%1：正在比较本地与共享目录").arg(displayName));
     QVector<SyncPlan::Scope> scopes;
     QString planError;
     if (!SyncPlan::build(localRoot, remoteRoot, m_fileTypes, m_rules, &scopes, &planError, m_exclusions)) {
@@ -770,6 +849,7 @@ void SyncWorker::process()
     if (!planError.isEmpty()) { finishWithError(Error, "远端扫描失败", planError); return; }
     QVector<PendingCopy> pendingCopies;
     ComparisonSummary summary = compareFiles(localFiles, remoteFiles, m_performCopy ? &pendingCopies : nullptr, remoteRoot);
+    m_comparisonSignature = summary.diagnosticSignature;
     const int initialMismatch = mismatchPercent(summary);
 
     if (finishIfCancelled()) {
@@ -804,9 +884,9 @@ void SyncWorker::process()
     }
 
     const int threadCount = recommendedRobocopyThreads(pendingCopies);
-    Diagnostics::record("sync.copy", QString("run=%1 files=%2 bytes=%3 threads=%4")
-                        .arg(m_operationId).arg(pendingCopies.size()).arg(summary.totalCopyBytes).arg(threadCount));
-    emitProgress(0, QString("待同步 %1 个文件，robocopy %2 线程").arg(pendingCopies.size()).arg(threadCount));
+    m_copyAttempted = true;
+    if (!m_backgroundLogging || !Diagnostics::backgroundFailure(m_diagnosticKey, diagnosticContext())) flushDiagnostics();
+    recordDiagnostic("sync.copy", {{"run", m_operationId}, {"files", pendingCopies.size()}, {"bytes", double(summary.totalCopyBytes)}, {"threads", threadCount}});
     emitState(Syncing,
               initialMismatch,
               "同步中",
@@ -814,6 +894,7 @@ void SyncWorker::process()
                   .arg(displayName)
                   .arg(pendingCopies.size())
                   .arg(threadCount));
+    emitProgress(0, QString("待同步 %1 个文件，robocopy %2 线程").arg(pendingCopies.size()).arg(threadCount));
 
     QString copyError;
     const bool copyOk = runRobocopy(this, localRoot, pendingCopies, threadCount, m_operationId, &copyError);
@@ -838,8 +919,7 @@ void SyncWorker::process()
     }
     pendingPdbs.sort(Qt::CaseInsensitive);
     if (!pendingPdbs.isEmpty()) {
-        Diagnostics::record("sync.pdb_missing", QString("run=%1 count=%2 verified=%3")
-                            .arg(m_operationId).arg(pendingPdbs.size()).arg(planError.isEmpty()), true);
+        recordDiagnostic("sync.pdb_missing", {{"run", m_operationId}, {"count", pendingPdbs.size()}, {"verified", planError.isEmpty()}}, true);
     }
     emit symbolsVerified(m_host.id, pendingPdbs, planError.isEmpty());
     if (!copyOk) {
@@ -848,6 +928,7 @@ void SyncWorker::process()
     }
     if (!planError.isEmpty()) { finishWithError(Error, "同步后校验失败", planError); return; }
     ComparisonSummary finalSummary = compareFiles(localFiles, finalRemoteFiles, nullptr, remoteRoot);
+    m_comparisonSignature = finalSummary.diagnosticSignature;
     const int finalMismatch = mismatchPercent(finalSummary);
     const bool hasBlockingDifference = hasSyncBlockingDifference(finalSummary);
 

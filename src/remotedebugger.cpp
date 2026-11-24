@@ -348,6 +348,16 @@ void RemoteDebugger::updateRemoteActions()
     const bool busy = isDeploying() || bool(m_download);
     const int row = m_ui->remoteHostCombo->currentIndex();
     const bool available = row >= 0 && row < m_hosts.size() && !busy;
+    QString hint;
+    if (row >= 0 && row < m_hosts.size()) {
+        const HostEntry &host = m_hosts.at(row);
+        if (host.username.trimmed().isEmpty())
+            hint = QStringLiteral("尚未填写远程管理用户名，请在主窗口编辑并保存主机。");
+        else if (host.password.isEmpty())
+            hint = QStringLiteral("已填写用户名，密码为空。Windows 默认限制空密码本地账号通过网络登录，远程管理可能被拒绝。");
+    }
+    m_ui->credentialHint->setText(hint);
+    m_ui->credentialHint->setVisible(!hint.isEmpty());
     m_ui->remoteHostCombo->setEnabled(!busy);
     m_ui->installRemoteButton->setEnabled(available);
     m_ui->browseRemoteInstallerButton->setEnabled(!busy);
@@ -377,8 +387,12 @@ void RemoteDebugger::deploy(const QString &operation)
     share.replace('/', '\\');
     const QString server = share.startsWith("\\\\") ? share.section('\\', 2, 2) : QString();
     static const QRegularExpression serverPattern("^[A-Za-z0-9_.-]{1,253}$");
-    if (!serverPattern.match(server).hasMatch() || server.contains("..") || host.username.trimmed().isEmpty()) {
-        setRemoteStatus("主机配置无效：请保存有效的共享路径，以及用于远程管理的管理员账号密码。");
+    if (!serverPattern.match(server).hasMatch() || server.contains("..")) {
+        setRemoteStatus("主机配置无效：请保存有效的远程共享路径。");
+        return;
+    }
+    if (host.username.trimmed().isEmpty()) {
+        setRemoteStatus("主机配置无效：尚未填写远程管理用户名，请在主窗口编辑并保存主机。");
         return;
     }
     QString installer;
@@ -468,6 +482,7 @@ void RemoteDebugger::startDeploymentProcess(const QString &scriptPath, const QBy
     for (int index = 0; index < command.size(); ++index)
         qToLittleEndian<quint16>(command.at(index).unicode(), reinterpret_cast<uchar *>(encoded.data()) + index * 2);
     m_deploymentOutput.clear();
+    m_lastDeploymentProgress.clear();
     m_deploymentErrors.clear();
     m_deploymentHasResult = false;
     m_remoteContactStarted = false;
@@ -519,8 +534,12 @@ void RemoteDebugger::readDeploymentOutput()
             && !object.value("message").toString().trimmed().isEmpty()) {
             m_deploymentHasResult = true;
             Diagnostics::event("remote.result", {{"run", m_deploymentId}, {"response", object}, {"elapsed_ms", double(m_deploymentElapsed.elapsed())}}, !object.value("success").toBool());
-            setRemoteStatus(object.value("message").toString());
+            QString message = object.value("message").toString();
+            if (!object.value("success").toBool() && !m_lastDeploymentProgress.isEmpty())
+                message += QStringLiteral("\n最后报告的进度：%1").arg(m_lastDeploymentProgress);
+            setRemoteStatus(message);
         } else if (type == "progress") {
+            m_lastDeploymentProgress = object.value("message").toString();
             Diagnostics::event("remote.stage", {{"run", m_deploymentId}, {"response", object}, {"elapsed_ms", double(m_deploymentElapsed.elapsed())}});
             if (m_deploymentHasResult) setRemoteStatus(m_ui->remoteStatus->text() + '\n' + object.value("message").toString());
             else setRemoteStatus(object.value("message").toString());
@@ -542,7 +561,8 @@ void RemoteDebugger::finishDeployment()
     if (!m_deploymentHasResult) {
         setRemoteStatus((m_remoteContactStarted ? QString("部署进程未返回有效结果：") : QString("本机部署进程未返回有效结果："))
             + (detail.isEmpty() ? m_deployment->errorString() : detail)
-            + (m_remoteContactStarted ? "\n已进入远程连接阶段，执行状态未知，请检查主机状态后再操作。" : "\n未进入远程连接阶段。"));
+            + (m_remoteContactStarted ? "\n已进入远程连接阶段，执行状态未知，请检查主机状态后再操作。" : "\n未进入远程连接阶段。")
+            + (m_lastDeploymentProgress.isEmpty() ? QString() : QStringLiteral("\n最后报告的进度：%1").arg(m_lastDeploymentProgress)));
     } else if (m_remoteContactStarted && (m_deployment->exitStatus() != QProcess::NormalExit || m_deployment->exitCode() != 0)) {
         setRemoteStatus(m_ui->remoteStatus->text() + "\n部署进程异常退出，临时任务或文件可能未完成清理。");
     }

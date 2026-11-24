@@ -5,6 +5,7 @@
 #include "diagnostics.h"
 #include "downloadprogress.h"
 #include "remotedebugger.h"
+#include "shortcutmanager.h"
 #include "networkhostdialog.h"
 #include "syncworker.h"
 #include "synccompletiontoast.h"
@@ -362,6 +363,30 @@ private:
 
 namespace
 {
+struct SyncRoundFeedback
+{
+    int running = 0;
+    QStringList copied;
+    QStringList failures;
+    int upToDate = 0;
+
+    void showResult(SyncCompletionToast &toast, bool feedback) const
+    {
+        if (copied.isEmpty() && !feedback) return;
+        if (!failures.isEmpty()) {
+            const QString title = copied.isEmpty() ? QStringLiteral("同步未全部完成")
+                : QStringLiteral("%1 台同步完成，%2 台未完成").arg(copied.size()).arg(failures.size());
+            toast.present(title, failures.join(QStringLiteral("、")), SyncCompletionToast::Warning);
+        } else if (!copied.isEmpty()) {
+            const QString title = copied.size() == 1 ? QStringLiteral("同步完成")
+                : QStringLiteral("%1 台主机同步完成").arg(copied.size());
+            toast.present(title, copied.join(QStringLiteral("、")), SyncCompletionToast::Success);
+        } else if (upToDate > 0) {
+            toast.present(QStringLiteral("文件已是最新，无需同步"), {}, SyncCompletionToast::Information);
+        }
+    }
+};
+
 QString normalizePathForUi(const QString &value)
 {
     return QDir::toNativeSeparators(QDir::cleanPath(QDir::fromNativeSeparators(value.trimmed())));
@@ -498,6 +523,9 @@ MainWindow::MainWindow(QWidget *parent, const QString &configPath, bool manageSy
     m_copyPreview = new RecentCopyPreview(this);
     m_copyPreview->watchDetails(m_hostTable);
     loadConfiguration();
+    m_shortcuts = std::make_unique<ShortcutManager>(this);
+    m_shortcuts->add({"manualSync", QStringLiteral("手动同步"), [this]() { m_ui->syncButton->click(); }});
+    applyShortcuts();
 
     m_updateCheckTimer = new QTimer(this);
     m_updateCheckTimer->setTimerType(Qt::PreciseTimer);
@@ -579,6 +607,7 @@ MainWindow::MainWindow(QWidget *parent, const QString &configPath, bool manageSy
 MainWindow::~MainWindow()
 {
     m_isClosing = true;
+    m_shortcuts.reset();
     m_syncCompletionToast->dismiss();
     stopUpdateChecks();
     requestWorkersToStop();
@@ -1064,6 +1093,20 @@ void MainWindow::showExclusionsExample()
     dialog->open();
 }
 
+void MainWindow::applyShortcuts()
+{
+    const QString issues = m_shortcuts->apply(m_config.shortcuts);
+    QString hint = QStringLiteral("手动同步");
+    for (const auto &binding : m_config.shortcuts)
+        if (binding.action == "manualSync") hint += QStringLiteral("（%1）").arg(binding.keys);
+    if (!issues.isEmpty()) {
+        hint += '\n' + issues;
+        statusBar()->showMessage(issues);
+        Diagnostics::event("shortcut.unavailable", {{"reason", issues}}, true);
+    }
+    m_ui->syncButton->setToolTip(hint);
+}
+
 void MainWindow::showPreferences()
 {
     if (m_isClosing) return;
@@ -1078,15 +1121,39 @@ void MainWindow::showPreferences()
     ui.buttonBox->button(QDialogButtonBox::Save)->setText("保存");
     ui.buttonBox->button(QDialogButtonBox::Cancel)->setText("取消");
     m_preferencesDialog = &dialog;
+    // 暂时释放本程序的全局注册，使原组合键可以被录入，也避免探测到自己的注册。
+    m_shortcuts->suspend();
+    auto *shortcuts = new ShortcutPreferences(*m_shortcuts, m_config.shortcuts, ui.shortcutsTab);
+    ui.shortcutsLayout->addWidget(shortcuts);
+    ui.shortcutFeedbackCheck->setChecked(m_config.showShortcutFeedback);
     ui.autoSyncCheck->setChecked(m_config.autoSync);
     ui.startWithSystemCheck->setChecked(m_config.startWithSystem);
     ui.intervalSpin->setValue(m_config.scanIntervalSeconds);
     ui.checkUpdatesOnStartupCheck->setChecked(m_config.checkUpdatesOnStartup);
     ui.silentUpdateCheck->setChecked(m_config.silentUpdate);
     ui.logRetentionSpin->setValue(m_config.logRetentionDays);
+    dialog.ensurePolished();
+    // 首次定高时计入整页内容，随后放开限制，让小窗口可以滚动。
+    ui.generalScroll->setMinimumHeight(ui.generalContent->sizeHint().height());
+    int preferredHeight = qMax(dialog.height(), dialog.sizeHint().height());
+    ui.generalScroll->setMinimumHeight(0);
+    if (QScreen *screen = QGuiApplication::screenAt(frameGeometry().center())) {
+        const int available = screen->availableGeometry().height();
+        dialog.setMinimumHeight(qMin(dialog.minimumHeight(), available));
+        preferredHeight = qMin(preferredHeight, available);
+    }
+    dialog.resize(dialog.width(), preferredHeight);
     connect(ui.buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(ui.buttonBox, &QDialogButtonBox::accepted, &dialog, [&]() {
+        if (!shortcuts->valid()) {
+            ui.preferencesTabs->setCurrentWidget(ui.shortcutsTab);
+            ui.errorLabel->setText(QStringLiteral("请检查快捷键格式，或清除该绑定。"));
+            ui.errorLabel->show();
+            return;
+        }
         AppConfig preferences = m_config;
+        preferences.shortcuts = shortcuts->bindings();
+        preferences.showShortcutFeedback = ui.shortcutFeedbackCheck->isChecked();
         preferences.autoSync = ui.autoSyncCheck->isChecked();
         preferences.startWithSystem = ui.startWithSystemCheck->isChecked();
         preferences.scanIntervalSeconds = ui.intervalSpin->value();
@@ -1103,6 +1170,7 @@ void MainWindow::showPreferences()
     });
     dialog.exec();
     m_preferencesDialog.clear();
+    applyShortcuts();
 }
 
 bool MainWindow::applyPreferences(const AppConfig &preferences, QString *errorMessage)
@@ -1112,6 +1180,8 @@ bool MainWindow::applyPreferences(const AppConfig &preferences, QString *errorMe
     // Keep current host records: a copy can finish while the dialog is open.
     AppConfig next = m_config;
     next.autoSync = preferences.autoSync;
+    next.shortcuts = preferences.shortcuts;
+    next.showShortcutFeedback = preferences.showShortcutFeedback;
     next.startWithSystem = preferences.startWithSystem;
     next.scanIntervalSeconds = qBound(1, preferences.scanIntervalSeconds, 3600);
     next.checkUpdatesOnStartup = preferences.checkUpdatesOnStartup;
@@ -1130,6 +1200,7 @@ bool MainWindow::applyPreferences(const AppConfig &preferences, QString *errorMe
         return false;
     }
     const bool enableAutoSync = !m_config.autoSync && next.autoSync;
+    const bool shortcutsChanged = next.shortcuts != m_config.shortcuts;
     const bool silentUpdateChanged = m_config.silentUpdate != next.silentUpdate;
     m_config = std::move(next);
     Diagnostics::record("config.preferences_saved", QString("auto=%1 interval=%2 retention_days=%3")
@@ -1138,6 +1209,7 @@ bool MainWindow::applyPreferences(const AppConfig &preferences, QString *errorMe
     updateTimerInterval();
     updateSettingsSummary();
     statusBar()->showMessage("设置已保存", 3000);
+    if (shortcutsChanged && !m_preferencesDialog) applyShortcuts();
     if (silentUpdateChanged) {
         if (m_config.silentUpdate) {
             m_silentInstallFailedVersion.clear();
@@ -2233,6 +2305,7 @@ void MainWindow::refreshHostTable()
     m_copyPreview->dismiss();
     m_isRefreshingTable = true;
     m_rowWidgets.clear();
+    m_checkDisplays.clear();
     m_hostTable->setRowCount(m_config.hosts.size());
 
     for (int row = 0; row < m_config.hosts.size(); ++row) {
@@ -2479,14 +2552,19 @@ void MainWindow::syncNow()
     }
 
     m_backgroundTasksPaused = false;
-    m_lastFingerprint = currentLocalFingerprint();
+    const bool fromShortcut = m_shortcuts && m_shortcuts->isDispatching();
     if (hasRunningWorkers()) {
+        if (fromShortcut && m_config.showShortcutFeedback) {
+            m_syncCompletionToast->present(m_pendingSyncAfterCurrentRun ? QStringLiteral("手动同步已在队列中")
+                : QStringLiteral("手动同步已排队"), QStringLiteral("当前任务结束后执行"), SyncCompletionToast::Information);
+        }
+        m_pendingShortcut |= fromShortcut;
         m_pendingSyncAfterCurrentRun = true;
         statusBar()->showMessage("当前正在检查/同步，完成后会自动执行一次同步", 3000);
-        return;
+    } else {
+        startOperations(true, false, fromShortcut);
     }
-
-    startOperations(true);
+    m_lastFingerprint = currentLocalFingerprint();
 }
 
 void MainWindow::stopAllOperations()
@@ -2498,6 +2576,7 @@ void MainWindow::stopAllOperations()
 
     m_backgroundTasksPaused = true;
     m_pendingSyncAfterCurrentRun = false;
+    m_pendingShortcut = false;
     m_pendingSyncStatusMessage.clear();
     m_config.autoSync = false;
     updateSettingsSummary();
@@ -2730,29 +2809,29 @@ void MainWindow::handleSymbolsVerified(const QString &hostId, const QStringList 
     showNotice("PDB 同步提醒", message, true, files.join('\n'));
 }
 
-void MainWindow::handleWorkerCopySucceeded(const QString &hostId, const QDateTime &completedUtc, quint64 revision)
+bool MainWindow::handleWorkerCopySucceeded(const QString &hostId, const QDateTime &completedUtc, quint64 revision)
 {
     if (m_isClosing || !completedUtc.isValid() || m_stoppingHostIds.contains(hostId)) {
-        return;
+        return false;
     }
 
     collectUiToConfig();
     if (m_syncContextRevisions.value(hostId) != revision) {
-        return;
+        return false;
     }
 
     for (HostEntry &host : m_config.hosts) {
         if (host.id == hostId) {
             host.lastSyncUtc = completedUtc.toUTC();
             refreshLastSyncTimes();
-            m_syncCompletionToast->enqueue(hostDisplayText(host));
             QString error;
             if (!ConfigManager::save(m_configPath, m_config, &error)) {
                 RoundedMessageBox::warning(this, "同步时间保存失败", QString("文件同步已完成，但同步时间无法写入配置：%1").arg(error));
             }
-            return;
+            return true;
         }
     }
+    return false;
 }
 
 void MainWindow::handleWorkerFinished(const QString &hostId)
@@ -2776,7 +2855,7 @@ void MainWindow::pollForChanges()
     const QString fingerprint = currentLocalFingerprint();
     if (m_lastFingerprint.isEmpty()) {
         m_lastFingerprint = fingerprint;
-        startOperations(m_config.autoSync);
+        startOperations(m_config.autoSync, true);
         return;
     }
 
@@ -2789,12 +2868,12 @@ void MainWindow::pollForChanges()
         m_lastFingerprint = fingerprint;
         if (m_config.autoSync) {
             statusBar()->showMessage("检测到本地文件变化，开始自动同步", 3000);
-            startOperations(true);
+            startOperations(true, true);
             return;
         }
     }
 
-    startOperations(m_config.autoSync);
+    startOperations(m_config.autoSync, true);
 }
 
 void MainWindow::updateHostRow(int row,
@@ -2816,6 +2895,7 @@ void MainWindow::updateHostRow(int row,
         status->setToolTip(statusText);
     }
     const QString hostId = m_config.hosts.value(row).id;
+    m_checkDisplays.remove(hostId);
     if (m_hostTable->item(row, 6) != nullptr) {
         m_hostTable->item(row, 6)->setText(detail);
         const QString tooltip = detailTooltip.isEmpty() ? detail : detailTooltip;
@@ -2914,18 +2994,25 @@ QVector<int> MainWindow::targetRows() const
     return rows;
 }
 
-void MainWindow::startOperations(bool performCopy)
+void MainWindow::startOperations(bool performCopy, bool backgroundPoll, bool fromShortcut)
 {
     if (m_isClosing || m_backgroundTasksPaused) {
         return;
     }
 
     collectUiToConfig();
+    const bool feedback = fromShortcut && m_config.showShortcutFeedback;
+    auto logSkipped = [&](const QString &reason) {
+        const QJsonObject result{{"reason", reason}, {"copy", performCopy}};
+        if (backgroundPoll) Diagnostics::backgroundState(m_configPath + "/eligibility", {}, result, {{"trigger", "background_poll"}, {"configuration", m_configPath}});
+        else Diagnostics::event("sync.skipped", result);
+    };
     const QVector<int> rows = targetRows();
     if (rows.isEmpty()) {
-        Diagnostics::event("sync.skipped", {{"reason", "no_target_hosts"}, {"copy", performCopy}});
+        logSkipped("no_target_hosts");
         if (performCopy) {
             statusBar()->showMessage("没有可同步的主机被勾选。", 3000);
+            if (feedback) m_syncCompletionToast->present("无法同步", "请先勾选目标主机", SyncCompletionToast::Warning);
         }
         return;
     }
@@ -2933,13 +3020,17 @@ void MainWindow::startOperations(bool performCopy)
     QStringList selectedTypes = m_config.selectedFileTypes;
     selectedTypes.removeDuplicates();
     if (selectedTypes.isEmpty() && std::none_of(m_config.syncRules.cbegin(), m_config.syncRules.cend(), [](const SyncRule &rule) { return rule.enabled; })) {
-        Diagnostics::event("sync.skipped", {{"reason", "no_types_or_rules"}, {"copy", performCopy}});
+        logSkipped("no_types_or_rules");
         if (performCopy) {
             statusBar()->showMessage("请勾选基本同步类型，或启用至少一条附加同步规则。", 3000);
+            if (feedback) m_syncCompletionToast->present("无法同步", "请选择文件类型或启用同步规则", SyncCompletionToast::Warning);
         }
         return;
     }
 
+    if (backgroundPoll) Diagnostics::backgroundState(m_configPath + "/eligibility", {}, {{"reason", "ready"}, {"copy", performCopy}}, {{"trigger", "background_poll"}, {"configuration", m_configPath}});
+    if (feedback) m_syncCompletionToast->present("已收到手动同步请求", "正在检查文件", SyncCompletionToast::Information);
+    const auto round = std::make_shared<SyncRoundFeedback>();
     for (int row : rows) {
         const HostEntry host = m_config.hosts.at(row);
         if (m_runningThreads.contains(host.id)) {
@@ -2951,27 +3042,73 @@ void MainWindow::startOperations(bool performCopy)
                                       m_config.syncRules, nullptr, m_config.excludedFilePatterns);
         worker->setProperty("diagnosticsSourceClass", sender() ? sender()->metaObject()->className() : "startup_or_direct");
         worker->setProperty("diagnosticsSourceObject", sender() ? sender()->objectName() : QString());
+        worker->setProperty("diagnosticsBackground", backgroundPoll);
+        worker->setProperty("diagnosticsScope", m_configPath);
         worker->moveToThread(thread);
 
+        const quint64 revision = m_syncContextRevisions.value(host.id);
+        const auto previous = m_checkDisplays.constFind(host.id);
+        const bool preserveChecking = backgroundPoll && previous != m_checkDisplays.constEnd() && previous->revision == revision;
+        ++round->running;
+        struct OperationDisplay {
+            bool copying = false;
+            int pendingPercent = -1;
+            QString pendingDetail;
+            int finalState = SyncWorker::Checking;
+            QString finalStatus;
+            bool copied = false;
+        };
+        const auto display = std::make_shared<OperationDisplay>();
         connect(thread, &QThread::started, worker, &SyncWorker::process);
-        connect(worker, &SyncWorker::progressChanged, this, &MainWindow::handleWorkerProgress);
+        connect(worker, &SyncWorker::progressChanged, this, [this, revision, preserveChecking, display](const QString &hostId, int percent, const QString &detail) {
+            if (m_syncContextRevisions.value(hostId) != revision) return;
+            if (preserveChecking && !display->copying) { display->pendingPercent = percent; display->pendingDetail = detail; return; }
+            handleWorkerProgress(hostId, percent, detail);
+        });
         connect(worker, &SyncWorker::recentFilesChanged, this, [this](const QString &hostId, const QStringList &files, const QString &title) {
             if (!m_isClosing) {
                 m_copyPreview->setRecentFiles(hostId, files, title);
             }
         });
-        connect(worker, &SyncWorker::stateChanged, this, &MainWindow::handleWorkerState);
-        const quint64 revision = m_syncContextRevisions.value(host.id);
+        connect(worker, &SyncWorker::stateChanged, this, [this, revision, backgroundPoll, preserveChecking, display](const QString &hostId,
+            int state, int mismatch, const QString &status, const QString &detail, const QString &tooltip, const QByteArray &signature) {
+            if (m_syncContextRevisions.value(hostId) != revision || m_stoppingHostIds.contains(hostId)) return;
+            // 后台检查保留上一轮最终显示；真正复制的状态先于进度到达，之后正常显示复制过程。
+            if (state == SyncWorker::Syncing) display->copying = true;
+            if (preserveChecking && state == SyncWorker::Checking) return;
+            const bool terminal = state != SyncWorker::Checking && state != SyncWorker::Syncing && state != SyncWorker::Stopping;
+            if (terminal) {
+                display->finalState = state;
+                display->finalStatus = status;
+            }
+            const auto previous = m_checkDisplays.constFind(hostId);
+            if (terminal && backgroundPoll && !display->copying && previous != m_checkDisplays.constEnd()
+                && previous->revision == revision && previous->signature == signature) return;
+            // 先等最终结果决定是否更新，恢复一致时仍须应用被暂存的“无需复制”完成进度。
+            if (terminal && display->pendingPercent >= 0) handleWorkerProgress(hostId, display->pendingPercent, display->pendingDetail);
+            handleWorkerState(hostId, state, mismatch, status, detail, tooltip);
+            if (terminal) m_checkDisplays.insert(hostId, {revision, signature});
+        });
         connect(worker, &SyncWorker::symbolsVerified, this, [this, revision](const QString &hostId, const QStringList &files, bool verified) {
             handleSymbolsVerified(hostId, files, verified, revision);
         });
-        connect(worker, &SyncWorker::copySucceeded, this, [this, revision](const QString &hostId, const QDateTime &completedUtc) {
-            handleWorkerCopySucceeded(hostId, completedUtc, revision);
+        connect(worker, &SyncWorker::copySucceeded, this, [this, revision, display](const QString &hostId, const QDateTime &completedUtc) {
+            display->copied = handleWorkerCopySucceeded(hostId, completedUtc, revision);
         });
         connect(worker, &SyncWorker::finished, this, &MainWindow::handleWorkerFinished);
         connect(worker, &SyncWorker::finished, worker, &QObject::deleteLater);
         connect(thread, &QThread::finished, thread, &QObject::deleteLater);
-        connect(thread, &QThread::finished, this, [this, host]() {
+        connect(thread, &QThread::finished, this, [this, host, revision, display, round, feedback]() {
+            // 同一轮的工作线程可能以任意顺序退出，最后一个负责发布本轮的实际结果。
+            if (m_syncContextRevisions.value(host.id) == revision && !m_stoppingHostIds.contains(host.id)) {
+                const auto name = hostDisplayText(host);
+                if (display->copied) round->copied.append(name);
+                else if (display->finalState == SyncWorker::InSync) ++round->upToDate;
+                else if (!display->finalStatus.isEmpty())
+                    round->failures.append(QStringLiteral("%1（%2）").arg(name, display->finalStatus));
+            }
+            if (--round->running == 0 && !m_isClosing && !m_backgroundTasksPaused)
+                round->showResult(*m_syncCompletionToast, feedback && m_config.showShortcutFeedback);
             m_runningThreads.remove(host.id);
             m_cancellationFlags.remove(host.id);
             if (m_stoppingHostIds.remove(host.id)) {
@@ -2997,7 +3134,9 @@ void MainWindow::startOperations(bool performCopy)
                         : m_pendingSyncStatusMessage;
                     m_pendingSyncStatusMessage.clear();
                     statusBar()->showMessage(pendingMessage, 3000);
-                    startOperations(true);
+                    const bool fromShortcut = m_pendingShortcut;
+                    m_pendingShortcut = false;
+                    startOperations(true, false, fromShortcut);
                     return;
                 }
 
@@ -3007,7 +3146,7 @@ void MainWindow::startOperations(bool performCopy)
 
         m_runningThreads.insert(host.id, thread);
         m_cancellationFlags.insert(host.id, worker->cancellationFlag());
-        updateHostRow(row, SyncWorker::Checking, 0,
+        if (!preserveChecking) updateHostRow(row, SyncWorker::Checking, 0,
                       "检测中",
                       "准备检测...",
                       "准备检测...",

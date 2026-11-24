@@ -13,6 +13,7 @@ SOURCES += \
     src/networkhostdialog.cpp \
     src/main.cpp \
     src/mainwindow.cpp \
+    src/shortcutmanager.cpp \
     src/synccompletiontoast.cpp \
     src/syncplan.cpp \
     src/syncworker.cpp
@@ -28,6 +29,7 @@ HEADERS += \
     src/remotedebugger.h \
     src/networkhostdialog.h \
     src/mainwindow.h \
+    src/shortcutmanager.h \
     src/synccompletiontoast.h \
     src/syncplan.h \
     src/syncworker.h

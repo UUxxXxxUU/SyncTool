@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(RemoteReleaseSync VERSION 1.1.5 LANGUAGES CXX)
+project(RemoteReleaseSync VERSION 1.1.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,6 +31,7 @@ add_executable(RemoteReleaseSync
     src/remotedebugger.ui
     src/main.cpp
     src/mainwindow.cpp
+    src/shortcutmanager.cpp src/shortcutmanager.h
     src/mainwindow.h
     src/synccompletiontoast.cpp
     src/synccompletiontoast.h
@@ -74,6 +75,7 @@ if (SYNC_BUILD_TESTS)
         src/syncplan.cpp src/syncplan.h
         src/syncworker.cpp src/syncworker.h
         src/mainwindow.cpp src/mainwindow.h
+        src/shortcutmanager.cpp src/shortcutmanager.h
         src/synccompletiontoast.cpp src/synccompletiontoast.h src/synccompletiontoast.ui
         src/mainwindow.ui src/preferencesdialog.ui src/syncruledialog.ui src/usagetipsdialog.ui
         src/recentcopypreview.ui src/updatedialog.ui
@@ -82,7 +84,7 @@ if (SYNC_BUILD_TESTS)
     target_link_libraries(SyncToolTests PRIVATE Qt${QT_VERSION_MAJOR}::Test
         Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network)
     if (WIN32)
-        target_link_libraries(SyncToolTests PRIVATE Mpr Shell32 User32 Version Wintrust Crypt32 Iphlpapi Ws2_32)
+        target_link_libraries(SyncToolTests PRIVATE Mpr Shell32 User32 Imm32 Version Wintrust Crypt32 Iphlpapi Ws2_32)
     endif()
     add_test(NAME SyncToolTests COMMAND SyncToolTests
         -o "${CMAKE_CURRENT_BINARY_DIR}/SyncToolTests-$<CONFIG>.txt,txt"

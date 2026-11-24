@@ -7,6 +7,19 @@
   <property name="windowTitle"><string>偏好设置</string></property>
   <layout class="QVBoxLayout" name="layout">
    <property name="spacing"><number>12</number></property>
+   <item><widget class="QTabWidget" name="preferencesTabs">
+    <widget class="QWidget" name="generalTab">
+     <attribute name="title"><string>常规</string></attribute>
+     <layout class="QVBoxLayout" name="generalTabLayout">
+      <property name="leftMargin"><number>0</number></property>
+      <property name="topMargin"><number>0</number></property>
+      <property name="rightMargin"><number>0</number></property>
+      <property name="bottomMargin"><number>0</number></property>
+      <item><widget class="QScrollArea" name="generalScroll">
+       <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+       <property name="widgetResizable"><bool>true</bool></property>
+       <widget class="QWidget" name="generalContent">
+        <layout class="QVBoxLayout" name="generalLayout">
    <item><widget class="QGroupBox" name="syncGroup">
     <property name="title"><string>同步</string></property>
     <layout class="QVBoxLayout" name="syncLayout">
@@ -31,6 +44,7 @@
    <item><widget class="QGroupBox" name="updateGroup">
     <property name="title"><string>更新</string></property>
     <layout class="QVBoxLayout" name="updateLayout">
+     <property name="spacing"><number>6</number></property>
      <item><widget class="QCheckBox" name="checkUpdatesOnStartupCheck">
       <property name="text"><string>启动时检查更新</string></property>
       <property name="toolTip"><string>下次启动时额外检查更新；每 2 小时的定时检查始终运行。</string></property>
@@ -57,6 +71,19 @@
      </widget></item>
      <item><spacer name="retentionSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
     </layout>
+   </widget></item>
+         <item><spacer name="generalSpacer"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property></spacer></item>
+        </layout>
+       </widget>
+      </widget></item>
+     </layout>
+    </widget>
+    <widget class="QWidget" name="shortcutsTab">
+     <attribute name="title"><string>快捷键</string></attribute>
+     <layout class="QVBoxLayout" name="shortcutsLayout">
+      <item><widget class="QCheckBox" name="shortcutFeedbackCheck"><property name="text"><string>触发快捷键时显示提示</string></property></widget></item>
+     </layout>
+    </widget>
    </widget></item>
    <item><widget class="QLabel" name="errorLabel">
     <property name="visible"><bool>false</bool></property>

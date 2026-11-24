@@ -31,6 +31,17 @@ struct SyncRule
     bool operator!=(const SyncRule &other) const { return !(*this == other); }
 };
 
+struct ShortcutBinding
+{
+    QString action;
+    QString keys;
+    bool global = false;
+    bool operator==(const ShortcutBinding &other) const
+    {
+        return action == other.action && keys == other.keys && global == other.global;
+    }
+};
+
 // 应用持久化配置。
 struct AppConfig
 {
@@ -47,4 +58,6 @@ struct AppConfig
     int logRetentionDays = 30;
     QVector<HostEntry> hosts;
     QStringList releaseDirHistory;
+    QVector<ShortcutBinding> shortcuts;
+    bool showShortcutFeedback = true;
 };
