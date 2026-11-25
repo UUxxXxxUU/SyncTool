@@ -40,7 +40,8 @@ class RemoteDeploymentTests(unittest.TestCase):
 
     def helper_request(self, changes=None):
         request = dict(operation='install', server='QA-HOST', username='qa-admin', password='NeverLogThis-QA-Password',
-                       major=17, architecture='x64', installer='', bootstrap='', run='qa-negative')
+                       major=17, architecture='x64', installer='', bootstrap='', run='qa-negative',
+                       startup_user='qa-desktop', stop_legacy_startup=False)
         request.update(changes or {})
         output = self.run_script(ROOT / 'resources/remote-deploy.ps1', json.dumps(request).encode('utf-8'))
         self.assertNotIn(request['password'].encode('utf-8'), output)
@@ -53,7 +54,9 @@ class RemoteDeploymentTests(unittest.TestCase):
     def bootstrap_request(self, parameters, package=None):
         script = self.workspace / 'deploy.ps1'
         shutil.copyfile(ROOT / 'resources/remote-bootstrap.ps1', script)
-        (self.workspace / 'parameters.json').write_text(json.dumps(parameters), encoding='utf-8-sig')
+        staged = dict(startup_user=os.environ['USERDOMAIN'] + '\\' + os.environ['USERNAME'], stop_legacy_startup=False)
+        staged.update(parameters)
+        (self.workspace / 'parameters.json').write_text(json.dumps(staged), encoding='utf-8-sig')
         if package is not None:
             (self.workspace / 'RemoteTools.exe').write_bytes(package)
         self.run_script(script)
@@ -119,7 +122,8 @@ if ($null -ne $item) {
                 os.environ['SYNC_QA_TASK_NAME'] = old
 
     def test_invalid_requests_are_rejected_without_connecting(self):
-        for changes in ({'operation': 'unknown'}, {'server': '../other'}, {'username': ''}, {'major': 99}):
+        for changes in ({'operation': 'unknown'}, {'server': '../other'}, {'username': ''}, {'major': 99},
+                        {'startup_user': ''}, {'stop_legacy_startup': 'false'}):
             with self.subTest(changes=changes):
                 self.assertTrue(self.helper_request(changes).startswith('远程操作失败：'))
 
@@ -188,41 +192,51 @@ try {
         self.assertTrue(Path(result['path']).is_file())
 
     @unittest.skipUnless(os.environ.get('SYNC_QA_DEBUGGER_ROOT'), 'Requires an existing signed Microsoft debugger')
-    def test_windows_validates_boot_task_without_registering_or_running(self):
-        script = self.workspace / 'validate-boot-task.ps1'
+    def test_windows_validates_login_task_without_registering_or_running(self):
+        script = self.workspace / 'validate-login-task.ps1'
         script.write_text(r'''
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $source = Get-Content -LiteralPath (Join-Path $env:SYNC_SOURCE_ROOT 'resources/remote-bootstrap.ps1') -Raw -Encoding UTF8
 $begin = $source.IndexOf('$task = $service.NewTask(0)')
-$end = $source.IndexOf('if ($null -eq $registered', $begin)
+$end = $source.IndexOf('if ($null -ne $existing)', $begin)
 if ($begin -lt 0 -or $end -le $begin) { throw 'Production task definition block is missing.' }
-$definition = $source.Substring($begin, $end - $begin).Replace('$task, 6,', '$task, 1,')
-if (-not $definition.Contains('$task, 1,') -or $definition.Contains('$task, 6,') -or $definition -match '\.Run\s*\(') {
+$definition = $source.Substring($begin, $end - $begin)
+if ($definition -match 'RegisterTaskDefinition|\.Run\s*\(') {
     throw 'Refusing to execute a task definition outside validation-only mode.'
 }
 $service = New-Object -ComObject 'Schedule.Service'
 $service.Connect()
 $root = $service.GetFolder('\')
 $startupName = 'RemoteReleaseSync_QA_Validate_' + [guid]::NewGuid().ToString('N')
+$startupSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $debugger = Join-Path $env:SYNC_QA_DEBUGGER_ROOT 'Common7\IDE\Remote Debugger\x64\msvsmon.exe'
 Invoke-Expression $definition
+$null = $root.RegisterTaskDefinition($startupName, $task, 1, $startupSid, $null, 3)
 $persisted = $false
 try { $unexpected = $root.GetTask($startupName); $persisted = $true }
 catch { if (($_.Exception.GetBaseException().HResult -band 0xffff) -ne 2) { throw } }
 if ($persisted) { $root.DeleteTask($startupName, 0) }
+$principalUser = $task.Principal.UserId
+if ($principalUser -notmatch '^S-\d-') {
+    $principalUser = (New-Object Security.Principal.NTAccount($principalUser)).Translate([Security.Principal.SecurityIdentifier]).Value
+}
 [Console]::WriteLine((@{ accepted = $true; persisted = $persisted; xml = $task.XmlText;
-    principal_user = $task.Principal.UserId; logon_type = $task.Principal.LogonType } | ConvertTo-Json -Compress))
+    user_sid = $startupSid; principal_user = $principalUser; logon_type = $task.Principal.LogonType } | ConvertTo-Json -Compress))
 ''', encoding='utf-8-sig')
         result = json.loads(self.run_script(script).decode('utf-8-sig'))
         self.assertTrue(result['accepted'])
         self.assertFalse(result['persisted'])
         document = ET.fromstring(result['xml'])
         ns = {'t': 'http://schemas.microsoft.com/windows/2004/02/mit/task'}
-        self.assertIsNotNone(document.find('t:Triggers/t:BootTrigger', ns))
-        self.assertIn(result['principal_user'].upper(), ('S-1-5-18', 'SYSTEM', 'NT AUTHORITY\\SYSTEM'))
-        self.assertEqual(result['logon_type'], 5)
-        self.assertIn('/noauth /anyuser', document.findtext('t:Actions/t:Exec/t:Arguments', namespaces=ns))
+        self.assertIsNone(document.find('t:Triggers/t:BootTrigger', ns))
+        self.assertEqual(document.findtext('t:Triggers/t:LogonTrigger/t:UserId', namespaces=ns), result['user_sid'])
+        self.assertEqual(result['principal_user'], result['user_sid'])
+        self.assertEqual(result['logon_type'], 3)
+        self.assertIsNone(document.find('t:Settings/t:RestartOnFailure', ns))
+        arguments = document.findtext('t:Actions/t:Exec/t:Arguments', namespaces=ns)
+        self.assertIn('/noauth /anyuser', arguments)
+        self.assertNotIn('/silent', arguments)
 
     @unittest.skipUnless(os.environ.get('SYNC_QA_SYSTEM_TASKS') == '1', 'Requires explicit local SYSTEM-task QA mode')
     def test_disable_updates_only_the_owned_local_task(self):
@@ -272,13 +286,15 @@ $sids=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])
 $protected=$acl.AreAccessRulesProtected -and @($sids | Where-Object { $_ -notin @('S-1-5-18','S-1-5-32-544') }).Count -eq 0
 $hash=(Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'RemoteTools.exe') -Algorithm SHA256).Hash
 $result=@{ success=($identity -eq 'S-1-5-18' -and $protected -and $hash -eq $parameters.sha256);
-    message='QA 系统回执'; identity=$identity; protected=$protected; hash=$hash; stage=$PSScriptRoot }
+    message='QA 系统回执'; identity=$identity; protected=$protected; hash=$hash; stage=$PSScriptRoot;
+    startup_user=$parameters.startup_user; stop_legacy_startup=$parameters.stop_legacy_startup }
 $file=Join-Path $PSScriptRoot 'result.partial'
 [IO.File]::WriteAllText($file,($result | ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($true)))
 Move-Item -LiteralPath $file -Destination (Join-Path $PSScriptRoot 'result.json') -Force
 '''
         request = dict(operation='install', server=os.environ['COMPUTERNAME'], username='qa-current-session',
                        password='Unused-QA-Secret', major=18, architecture='x64', run='qa-transport',
+                       startup_user='QA-Desktop', stop_legacy_startup=False,
                        installer=os.environ['SYNC_QA_REMOTE_PACKAGE'], bootstrap=base64.b64encode(receipt.encode('utf-8')).decode('ascii'))
         try:
             output = self.run_script(helper, json.dumps(request).encode('utf-8'))
@@ -288,6 +304,8 @@ Move-Item -LiteralPath $file -Destination (Join-Path $PSScriptRoot 'result.json'
             self.assertTrue(final['success'], json.dumps(final, ensure_ascii=False))
             self.assertEqual(final['details']['identity'], 'S-1-5-18')
             self.assertTrue(final['details']['protected'])
+            self.assertEqual(final['details']['startup_user'], request['startup_user'])
+            self.assertIs(final['details']['stop_legacy_startup'], False)
             self.assertEqual(final['details']['hash'].lower(), hashlib.sha256(Path(request['installer']).read_bytes()).hexdigest())
             stage = Path(final['details']['stage']).resolve()
             self.assertEqual(stage.parent, (Path(os.environ['SystemRoot']) / 'Temp').resolve())
@@ -302,6 +320,7 @@ Move-Item -LiteralPath $file -Destination (Join-Path $PSScriptRoot 'result.json'
         helper = self.local_helper(job, 'RemoteReleaseSync_QA_Unused_' + uuid.uuid4().hex)
         request = dict(operation='install', server=os.environ['COMPUTERNAME'], username='qa-current-session',
                        password='Unused-QA-Secret', major=18, architecture='x64', run='qa-worker-crash',
+                       startup_user='QA-Desktop', stop_legacy_startup=False,
                        installer=os.environ['SYNC_QA_REMOTE_PACKAGE'], bootstrap=base64.b64encode(b'exit 19').decode('ascii'))
         try:
             output = self.run_script(helper, json.dumps(request).encode('utf-8'))

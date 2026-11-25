@@ -1,31 +1,22 @@
 {
-  "version": "1.1.6",
-  "notes": "新增手动同步快捷键和可关闭的触发反馈，改进同步完成提示。修复后台检查覆盖同步结果、空闲时重复记录日志，以及偏好设置中的文字裁切。",
+  "version": "1.1.7",
+  "notes": "修复普通 Windows 快捷方式导致同步中断的问题。远程调试器改为指定账号登录后在桌面自动打开，可以直接从窗口退出。",
   "downloadUrl": "https://github.com/UUxxXxxUU/SyncTool/releases",
-  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.1.6",
-  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.1.6/RemoteReleaseSync-1.1.6-windows-x64-setup.exe",
+  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.1.7",
+  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.1.7/RemoteReleaseSync-1.1.7-windows-x64-setup.exe",
   "sections": [
     {
-      "title": "快捷键与同步提示",
+      "title": "同步修复",
       "items": [
-        "在偏好设置中录入手动同步快捷键，可选仅主窗口或全局（含托盘）。检测到冲突时仍可保存。",
-        "快捷键反馈默认开启，可在偏好设置中关闭。提示显示在屏幕上方，支持鼠标穿透，不抢键盘焦点。",
-        "实际复制完成后显示 3 秒提示。多台主机的结果合并显示，成功提示带有一次轻微呼吸效果。"
+        "本地和远端扫描会跳过普通 .lnk 快捷方式，继续同步其他文件。规则明确指定 .lnk 时会显示提示。",
+        "继续拦截真正的符号链接和目录联接。"
       ]
     },
     {
-      "title": "同步状态与日志",
+      "title": "远程调试器",
       "items": [
-        "后台检查保留上一轮的同步结果、进度和错误详情，实际连接共享目录时才显示连接阶段。",
-        "后台轮询结果不变时减少重复日志，保留实际复制、异常和恢复记录。",
-        "修复偏好设置中无感更新说明裁切，窗口缩小时常规页支持滚动。"
-      ]
-    },
-    {
-      "title": "远程管理提示",
-      "items": [
-        "区分未填用户名和密码为空，失败时保留系统返回的错误和最后报告的进度。",
-        "已知问题：开启自启时，远程结果读取时序有时会造成界面误报。"
+        "填写远端桌面账号后，调试器会在该账号登录 Windows 时显示窗口，可直接退出。",
+        "已安装的主机可以通过「开启自启」迁移。旧后台调试器仍在运行时，可确认结束旧实例再继续。"
       ]
     }
   ]

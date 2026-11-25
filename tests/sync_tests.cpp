@@ -214,7 +214,7 @@ private slots:
             QApplication::setFont(QFont("Microsoft YaHei", 10));
         }
         QApplication::setWindowIcon(QIcon(":/icons/app_32.png"));
-        QApplication::setApplicationVersion("1.1.6");
+        QApplication::setApplicationVersion("1.1.7");
         QSettings settings(startupKey, QSettings::NativeFormat);
         m_hadStartup = settings.contains("RemoteReleaseSync");
         m_originalStartup = settings.value("RemoteReleaseSync").toString();
@@ -432,6 +432,32 @@ private slots:
         QCOMPARE(run.copied.size(), 240);
         QCOMPARE(QDir(target()).entryList({"*.exe"}, QDir::Files).size(), 240);
     }
+#ifdef Q_OS_WIN
+    void shortcutsDoNotBlockSync()
+    {
+        const QString app = source() + "/app.exe";
+        const QString oldTarget = root() + "/old.exe";
+        const QString remoteShortcut = target() + "/app.exe - 快捷方式.lnk";
+        QVERIFY(writeFile(app, "EXE"));
+        QVERIFY(writeFile(oldTarget));
+        QVERIFY(QFile::link(oldTarget, source() + "/old.lnk"));
+        QVERIFY(QFile::remove(oldTarget));
+        QVERIFY(QFile::link(app, remoteShortcut));
+
+        const Run run = runWorker(source(), target(), {}, {{".", {}}});
+        QVERIFY2(run.state == SyncWorker::InSync, qPrintable(run.detail));
+        QCOMPARE(readFile(target() + "/app.exe"), QByteArray("EXE"));
+        QCOMPARE(run.copied, QStringList{"app.exe"});
+        QVERIFY(QFileInfo::exists(remoteShortcut));
+
+        QVector<SyncPlan::Scope> scopes;
+        QString error;
+        QVERIFY(!SyncPlan::build(source(), target(), {}, {{"old.lnk", {}}}, &scopes, &error));
+        QVERIFY2(error.contains("快捷方式"), qPrintable(error));
+        QVERIFY(!SyncPlan::build(source(), target(), {"*.LNK"}, {}, &scopes, &error));
+        QVERIFY2(error.contains("快捷方式"), qPrintable(error));
+    }
+#endif
     void junctionIsRejected()
     {
         QVERIFY(writeFile(source() + "/real/file.exe"));
@@ -2136,6 +2162,11 @@ private slots:
         dialog.setHosts({first, second}, 1);
         auto *combo = dialog.findChild<QComboBox *>("remoteHostCombo");
         QVERIFY(combo);
+        auto *startupUser = dialog.findChild<QLineEdit *>("startupUserEdit");
+        auto *stopLegacy = dialog.findChild<QCheckBox *>("stopLegacyStartupCheck");
+        QVERIFY(startupUser && stopLegacy);
+        startupUser->setText("qa-desktop");
+        stopLegacy->setChecked(true);
         auto *credentialHint = dialog.findChild<QLabel *>("credentialHint");
         QVERIFY(credentialHint && credentialHint->text().contains("密码为空"));
         QCOMPARE(combo->currentIndex(), 1);
@@ -2143,11 +2174,14 @@ private slots:
         dialog.setHosts({first, second}, -1);
         QCOMPARE(combo->currentIndex(), 1);
         QCOMPARE(dialog.m_hosts.at(1).username, QString("changed-user"));
+        QCOMPARE(startupUser->text(), QString("qa-desktop"));
         dialog.deploy("enable");
         QVERIFY(!dialog.isDeploying());
         QVERIFY(dialog.findChild<QLabel *>("remoteStatus")->text().contains("无效"));
         dialog.setHosts({first}, -1);
         QCOMPARE(combo->currentIndex(), -1);
+        QVERIFY(startupUser->text().isEmpty());
+        QVERIFY(!stopLegacy->isChecked());
         QVERIFY(!dialog.findChild<QPushButton *>("installRemoteButton")->isEnabled());
         first.sharePath = QStringLiteral("//reserved.invalid/share");
         first.username.clear();
@@ -2162,6 +2196,9 @@ private slots:
         first.password = "test-only";
         dialog.setHosts({first}, 0);
         QVERIFY(credentialHint->isHidden());
+        dialog.deploy("enable");
+        QVERIFY(!dialog.isDeploying());
+        QVERIFY(dialog.findChild<QLabel *>("remoteStatus")->text().contains("远端 Windows 桌面的账号"));
     }
 
     void deploymentOnExplicitlyAuthorizedSavedRemoteHost()
@@ -2204,6 +2241,10 @@ private slots:
         }};
         RemoteDebugger dialog;
         dialog.setHosts({selected}, 0);
+        if (operation != "disable") {
+            dialog.findChild<QLineEdit *>("startupUserEdit")->setText(
+                qEnvironmentVariable("SYNC_QA_REMOTE_DESKTOP_USER", selected.username));
+        }
         auto *versions = dialog.findChild<QComboBox *>("debuggerVersion");
         auto *architectures = dialog.findChild<QComboBox *>("debuggerArchitecture");
         QVERIFY(versions && architectures);
@@ -2285,6 +2326,7 @@ private slots:
         host.id = "qa-local-launch"; host.name = "本机脚本启动验证";
         host.sharePath = "//127.0.0.1/QA-unused"; host.username = "qa-unused"; host.password = "QA-stdin-only-秘密";
         dialog.setHosts({host}, 0);
+        dialog.findChild<QLineEdit *>("startupUserEdit")->setText("qa-desktop");
         auto *versions = dialog.findChild<QComboBox *>("debuggerVersion");
         auto *architectures = dialog.findChild<QComboBox *>("debuggerArchitecture");
         QVERIFY(versions && architectures);

@@ -37,22 +37,51 @@ QString shareRoot(const QString &path)
     return parts.size() >= 2 ? "//" + parts.at(0) + '/' + parts.at(1) : QString();
 }
 
-bool reparsePoint(const QString &path)
+enum class EntryKind { Regular, Missing, Shortcut };
+
+bool inspectEntry(const QString &path, EntryKind &kind, QString *error)
 {
+    kind = EntryKind::Regular;
 #ifdef Q_OS_WIN
-    const DWORD attributes = GetFileAttributesW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(path).utf16()));
-    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+    const QString nativePath = QDir::toNativeSeparators(path);
+    QString attributePath = nativePath;
+    if (nativePath.size() >= MAX_PATH && !nativePath.startsWith("\\\\?\\")) {
+        const QString absolute = QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath());
+        attributePath = absolute.startsWith("\\\\") ? "\\\\?\\UNC\\" + absolute.mid(2) : "\\\\?\\" + absolute;
+    }
+    const DWORD attributes = GetFileAttributesW(reinterpret_cast<LPCWSTR>(attributePath.utf16()));
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD code = GetLastError();
+        if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) {
+            kind = EntryKind::Missing;
+            return true;
+        }
+        // Windows does not support GetFileAttributesW on a bare UNC share.
+        if (code == ERROR_BAD_NETPATH && path == shareRoot(path)) return true;
+        *error = QString("无法读取路径属性：%1（Windows 错误码 %2）").arg(nativePath).arg(code);
+        return false;
+    }
+    if (!(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        // Inspect the entry itself: Qt can report the shortcut target's type and permissions.
+        if (!(attributes & FILE_ATTRIBUTE_DIRECTORY) && path.endsWith(".lnk", Qt::CaseInsensitive)) {
+            kind = EntryKind::Shortcut;
+        }
         return true;
     }
+#else
+    if (!QFileInfo(path).isSymLink()) return true;
 #endif
-    return QFileInfo(path).isSymLink();
+    *error = QString("路径包含符号链接或目录联接，请改用实际目录：%1").arg(QDir::toNativeSeparators(path));
+    return false;
 }
 
 bool validateAncestors(QString path, QString *error)
 {
     while (!path.isEmpty()) {
-        if (reparsePoint(path)) {
-            *error = QString("路径包含符号链接或目录联接，请改用实际目录：%1").arg(QDir::toNativeSeparators(path));
+        EntryKind kind;
+        if (!inspectEntry(path, kind, error)) return false;
+        if (kind == EntryKind::Shortcut) {
+            *error = QString("同步规则不支持 Windows 快捷方式：%1").arg(QDir::toNativeSeparators(path));
             return false;
         }
         const QString parent = clean(QFileInfo(path).absolutePath());
@@ -91,6 +120,12 @@ bool SyncPlan::normalizeTypes(const QStringList &values, QStringList *types, QSt
             if (error) *error = QString("无效的文件类型：%1；请填写 png、.qm 或 *.dll，多种类型用分号分隔。").arg(value);
             return false;
         }
+#ifdef Q_OS_WIN
+        if (value == "lnk") {
+            if (error) *error = "当前不支持同步 Windows 快捷方式（.lnk）。";
+            return false;
+        }
+#endif
         if (!types->contains(value)) types->append(value);
     }
     types->sort();
@@ -191,10 +226,6 @@ bool SyncPlan::build(const QString &localBase, const QString &remoteBase, const 
         scope.localPath = resolvePath(local, scope.relativePath);
         scope.remotePath = resolvePath(remote, scope.relativePath);
         if (!validateRemotePath(remoteBase, scope.relativePath, error)) return false;
-        if (!QFileInfo(scope.localPath).exists()) {
-            *error = QString("规则 %1 的本地路径不存在：%2").arg(rule.relativePath, QDir::toNativeSeparators(scope.localPath));
-            return false;
-        }
         scopes->append(scope);
     }
     if (scopes->isEmpty()) {
@@ -204,6 +235,10 @@ bool SyncPlan::build(const QString &localBase, const QString &remoteBase, const 
     for (Scope &scope : *scopes) {
         scope.excludedNames = excludedNames;
         if (!validateAncestors(scope.localPath, error)) return false;
+        if (!QFileInfo(scope.localPath).exists()) {
+            *error = QString("规则 %1 的本地路径不存在：%2").arg(scope.relativePath, QDir::toNativeSeparators(scope.localPath));
+            return false;
+        }
         if (!remote.isEmpty() && !validateAncestors(scope.remotePath, error)) return false;
         if (remote.isEmpty()) continue;
         for (const Scope &source : *scopes) {
@@ -263,10 +298,12 @@ SyncPlan::Files SyncPlan::collect(const QString &base, const QVector<Scope> &sco
             if (cancelled && cancelled->load()) return files;
             iterator.next();
             const QFileInfo info = iterator.fileInfo();
-            if (reparsePoint(info.absoluteFilePath())) {
-                *error = QString("规则 %1 包含符号链接或目录联接：%2").arg(scope.relativePath, QDir::toNativeSeparators(info.absoluteFilePath()));
+            EntryKind kind;
+            if (!inspectEntry(info.absoluteFilePath(), kind, error)) {
+                *error = QString("规则 %1：%2").arg(scope.relativePath, *error);
                 return {};
             }
+            if (kind != EntryKind::Regular) continue;
             if (!info.isReadable()) {
                 *error = QString("无法读取：%1").arg(QDir::toNativeSeparators(info.absoluteFilePath()));
                 return {};
