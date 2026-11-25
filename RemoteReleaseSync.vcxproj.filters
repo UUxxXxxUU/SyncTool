@@ -44,6 +44,7 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\synccompletiontoast.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\feedbackdialog.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\syncworker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -57,6 +58,7 @@
     </ClInclude>
     <ClInclude Include="src\roundedwindow.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\downloadprogress.h"><Filter>Header Files</Filter></ClInclude>
+    <QtMoc Include="src\feedbackdialog.h"><Filter>Header Files</Filter></QtMoc>
     <QtMoc Include="src\networkhostdialog.h"><Filter>Header Files</Filter></QtMoc>
     <ClInclude Include="third_party\qt-frameless-window\FramelessWindow.hpp"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\appconfig.h">

@@ -3,6 +3,7 @@
 #include "appearance.h"
 #include "diagnostics.h"
 #include "downloadprogress.h"
+#include "feedbackdialog.h"
 #include "mainwindow.h"
 #include "remotedebugger.h"
 #include "shortcutmanager.h"
@@ -50,6 +51,8 @@
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QSpinBox>
+#include <QSslCertificate>
+#include <QSslConfiguration>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabWidget>
@@ -215,10 +218,52 @@ private slots:
             QApplication::setFont(QFont("Microsoft YaHei", 10));
         }
         QApplication::setWindowIcon(QIcon(":/icons/app_32.png"));
-        QApplication::setApplicationVersion("1.1.8");
+        QApplication::setApplicationVersion("1.1.9");
         QSettings settings(startupKey, QSettings::NativeFormat);
         m_hadStartup = settings.contains("RemoteReleaseSync");
         m_originalStartup = settings.value("RemoteReleaseSync").toString();
+    }
+
+    void feedbackDialogSendsChineseTextAndImage()
+    {
+        const QString url = qEnvironmentVariable("SYNC_FEEDBACK_QA_URL");
+        const QString invite = qEnvironmentVariable("SYNC_FEEDBACK_QA_INVITE");
+        if (url.isEmpty() || invite.isEmpty()) QSKIP("Requires a temporary feedback server and invitation");
+        struct RestoreOrganization {
+            QString name = QCoreApplication::organizationName();
+            ~RestoreOrganization() { QCoreApplication::setOrganizationName(name); }
+        } restoreOrganization;
+        QCoreApplication::setOrganizationName(QStringLiteral("SyncToolFeedbackTest-") + QUuid::createUuid().toString(QUuid::WithoutBraces));
+        struct RestoreTls {
+            QSslConfiguration configuration = QSslConfiguration::defaultConfiguration();
+            ~RestoreTls() { QSslConfiguration::setDefaultConfiguration(configuration); }
+        } restoreTls;
+        const QString path = qEnvironmentVariable("SYNC_FEEDBACK_QA_CA");
+        if (!path.isEmpty()) {
+            const auto certificates = QSslCertificate::fromPath(path);
+            QVERIFY(!certificates.isEmpty());
+            auto configuration = restoreTls.configuration;
+            configuration.setCaCertificates(configuration.caCertificates() + certificates);
+            QSslConfiguration::setDefaultConfiguration(configuration);
+        }
+        FeedbackDialog dialog;
+        dialog.show();
+        dialog.findChild<QLineEdit *>("feedbackService")->setText(url);
+        dialog.findChild<QLineEdit *>("feedbackInvite")->setText(invite);
+        dialog.findChild<QPushButton *>("feedbackActivate")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(dialog.findChild<QLineEdit *>("feedbackInvite")->text().isEmpty(), 8000);
+        dialog.findChild<QLineEdit *>("feedbackTitle")->setText(QStringLiteral("中文反馈测试"));
+        dialog.findChild<QPlainTextEdit *>("feedbackBody")->setPlainText(QStringLiteral("报错现象和复现说明"));
+        QImage image(20, 20, QImage::Format_RGB32);
+        image.fill(Qt::blue);
+        QApplication::clipboard()->setImage(image);
+        dialog.findChild<QPushButton *>("feedbackPaste")->click();
+        dialog.findChild<QPushButton *>("feedbackSubmit")->click();
+        const auto *conversation = dialog.findChild<QPlainTextEdit *>("feedbackConversation");
+        QTRY_VERIFY_WITH_TIMEOUT(conversation->toPlainText().contains(QStringLiteral("报错现象和复现说明")), 8000);
+        const QString screenshot = qEnvironmentVariable("SYNC_FEEDBACK_QA_SCREENSHOT");
+        if (!screenshot.isEmpty()) QVERIFY(dialog.grab().save(screenshot));
+        QSettings().remove(QStringLiteral("feedback"));
     }
     void init()
     {

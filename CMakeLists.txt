@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(RemoteReleaseSync VERSION 1.1.8 LANGUAGES CXX)
+project(RemoteReleaseSync VERSION 1.1.9 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,6 +24,7 @@ add_executable(RemoteReleaseSync
     src/configmanager.h
     src/diagnostics.cpp
     src/diagnostics.h
+    src/feedbackdialog.cpp src/feedbackdialog.h
     src/remotedebugger.cpp
     src/remotedebugger.h
     src/networkhostdialog.cpp
@@ -55,7 +56,7 @@ target_link_libraries(RemoteReleaseSync PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Q
 
 if (WIN32)
     target_sources(RemoteReleaseSync PRIVATE resources/app.rc)
-    target_link_libraries(RemoteReleaseSync PRIVATE Mpr Shell32 User32 Version Wintrust Crypt32 Iphlpapi Ws2_32)
+    target_link_libraries(RemoteReleaseSync PRIVATE Mpr Shell32 User32 Version Wintrust Crypt32 Iphlpapi Ws2_32 Advapi32)
 endif()
 
 if (QT_VERSION_MAJOR EQUAL 6)
@@ -70,6 +71,7 @@ if (SYNC_BUILD_TESTS)
         tests/sync_tests.cpp
         src/configmanager.cpp src/configmanager.h src/appconfig.h src/appearance.h
         src/diagnostics.cpp src/diagnostics.h
+        src/feedbackdialog.cpp src/feedbackdialog.h
         src/remotedebugger.cpp src/remotedebugger.h src/remotedebugger.ui
         src/networkhostdialog.cpp src/networkhostdialog.h
         src/syncplan.cpp src/syncplan.h
@@ -84,7 +86,7 @@ if (SYNC_BUILD_TESTS)
     target_link_libraries(SyncToolTests PRIVATE Qt${QT_VERSION_MAJOR}::Test
         Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network)
     if (WIN32)
-        target_link_libraries(SyncToolTests PRIVATE Mpr Shell32 User32 Imm32 Version Wintrust Crypt32 Iphlpapi Ws2_32)
+        target_link_libraries(SyncToolTests PRIVATE Mpr Shell32 User32 Imm32 Version Wintrust Crypt32 Iphlpapi Ws2_32 Advapi32)
     endif()
     add_test(NAME SyncToolTests COMMAND SyncToolTests
         -o "${CMAKE_CURRENT_BINARY_DIR}/SyncToolTests-$<CONFIG>.txt,txt"

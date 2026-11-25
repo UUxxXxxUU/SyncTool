@@ -103,7 +103,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>Mpr.lib;Shell32.lib;Iphlpapi.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Mpr.lib;Shell32.lib;Iphlpapi.lib;Ws2_32.lib;Advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalOptions>"/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' publicKeyToken='6595b64144ccf1df' language='*' processorArchitecture='*'" %(AdditionalOptions)</AdditionalOptions>
       <DataExecutionPrevention>true</DataExecutionPrevention>
@@ -153,7 +153,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>Mpr.lib;Shell32.lib;Iphlpapi.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Mpr.lib;Shell32.lib;Iphlpapi.lib;Ws2_32.lib;Advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalOptions>"/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' publicKeyToken='6595b64144ccf1df' language='*' processorArchitecture='*'" %(AdditionalOptions)</AdditionalOptions>
       <DataExecutionPrevention>true</DataExecutionPrevention>
@@ -188,6 +188,7 @@
     <ClCompile Include="src\networkhostdialog.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\mainwindow.cpp" />
+    <ClCompile Include="src\feedbackdialog.cpp" />
     <ClCompile Include="src\synccompletiontoast.cpp" />
     <ClCompile Include="src\syncworker.cpp" />
     <ClCompile Include="src\shortcutmanager.cpp" />
@@ -206,6 +207,7 @@
     <ClInclude Include="src\diagnostics.h" />
     <QtMoc Include="src\remotedebugger.h" />
     <QtMoc Include="src\mainwindow.h" />
+    <QtMoc Include="src\feedbackdialog.h" />
     <QtMoc Include="src\synccompletiontoast.h" />
     <QtMoc Include="src\syncworker.h" />
   </ItemGroup>

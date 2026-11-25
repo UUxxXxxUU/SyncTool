@@ -136,6 +136,14 @@ bool sensitiveEdit(const QLineEdit *edit)
         || edit->property("diagnosticsSensitive").toBool();
 }
 
+bool privateInteraction(QObject *object)
+{
+    for (auto *parent = object; parent != nullptr; parent = parent->parent()) {
+        if (parent->property("diagnosticsPrivate").toBool()) return true;
+    }
+    return false;
+}
+
 QJsonObject describe(QObject *object)
 {
     QJsonObject fields{{"control", object->objectName()}, {"class", object->metaObject()->className()}};
@@ -164,7 +172,7 @@ public:
     explicit InteractionObserver(QObject *parent) : QObject(parent) {}
     void observe(QObject *object)
     {
-        if (!object || object->property("diagnosticsObserved").toBool()) return;
+        if (!object || object->property("diagnosticsObserved").toBool() || privateInteraction(object)) return;
         object->setProperty("diagnosticsObserved", true);
         if (auto *button = qobject_cast<QAbstractButton *>(object)) {
             connect(button, &QAbstractButton::clicked, this, [button](bool checked) {
@@ -251,6 +259,7 @@ public:
 protected:
     bool eventFilter(QObject *object, QEvent *event) override
     {
+        if (privateInteraction(object)) return false;
         if (event->type() == QEvent::ActionAdded) observe(static_cast<QActionEvent *>(event)->action());
         auto *widget = qobject_cast<QWidget *>(object);
         if (!widget) return false;

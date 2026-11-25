@@ -4,6 +4,7 @@
 #include "configmanager.h"
 #include "diagnostics.h"
 #include "downloadprogress.h"
+#include "feedbackdialog.h"
 #include "remotedebugger.h"
 #include "shortcutmanager.h"
 #include "networkhostdialog.h"
@@ -921,6 +922,18 @@ void MainWindow::setupUi()
     connect(m_ui->usageTipsAction, &QAction::triggered, this, &MainWindow::showUsageTips);
     connect(m_ui->preferencesAction, &QAction::triggered, this, &MainWindow::showPreferences);
     connect(m_ui->checkUpdatesAction, &QAction::triggered, this, &MainWindow::checkForUpdates);
+    auto *feedbackAction = m_ui->helpMenu->addAction(QStringLiteral("反馈问题 / 提需求"));
+    feedbackAction->setObjectName(QStringLiteral("feedbackCenterAction"));
+    auto *feedback = new FeedbackDialog(this);
+    connect(feedback, &FeedbackDialog::unreadChanged, feedbackAction, [feedbackAction](int unread) {
+        feedbackAction->setText(unread > 0 ? QStringLiteral("反馈问题 / 提需求（%1）").arg(unread)
+                                          : QStringLiteral("反馈问题 / 提需求"));
+    });
+    connect(feedbackAction, &QAction::triggered, feedback, [feedback] {
+        feedback->show();
+        feedback->raise();
+        feedback->activateWindow();
+    });
     connect(m_ui->saveConfigAction, &QAction::triggered, this, &MainWindow::saveConfiguration);
     connect(m_ui->remoteDebuggerAction, &QAction::triggered, this, &MainWindow::showRemoteDebugger);
     connect(m_ui->diagnosticsAction, &QAction::triggered, this, [this]() {

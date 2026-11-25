@@ -13,6 +13,7 @@ SOURCES += \
     src/networkhostdialog.cpp \
     src/main.cpp \
     src/mainwindow.cpp \
+    src/feedbackdialog.cpp \
     src/shortcutmanager.cpp \
     src/synccompletiontoast.cpp \
     src/syncplan.cpp \
@@ -29,6 +30,7 @@ HEADERS += \
     src/remotedebugger.h \
     src/networkhostdialog.h \
     src/mainwindow.h \
+    src/feedbackdialog.h \
     src/shortcutmanager.h \
     src/synccompletiontoast.h \
     src/syncplan.h \
@@ -47,4 +49,4 @@ FORMS += \
     src/updatedialog.ui
 
 win32:RC_FILE = resources/app.rc
-win32:LIBS += -lMpr -lShell32 -lUser32 -lVersion -lWintrust -lCrypt32 -lIphlpapi -lWs2_32
+win32:LIBS += -lMpr -lShell32 -lUser32 -lVersion -lWintrust -lCrypt32 -lIphlpapi -lWs2_32 -lAdvapi32

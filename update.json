@@ -1,23 +1,15 @@
 {
-  "version": "1.1.8",
-  "notes": "支持移除 Release 目录历史，新增停止同步快捷键，优化设备扫描及同步页签的数量显示。",
+  "version": "1.1.9",
+  "notes": "新增反馈中心，支持提交问题或需求、附加截图和在原会话中跟进。",
   "downloadUrl": "https://github.com/UUxxXxxUU/SyncTool/releases",
-  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.1.8",
-  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.1.8/RemoteReleaseSync-1.1.8-windows-x64-setup.exe",
+  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.1.9",
+  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.1.9/RemoteReleaseSync-1.1.9-windows-x64-setup.exe",
   "sections": [
     {
-      "title": "同步与快捷键",
+      "title": "反馈中心",
       "items": [
-        "展开 Release 目录历史，右键移除条目，或高亮条目后按 Delete。移除操作会保存，当前目录仍可继续使用。",
-        "偏好设置可分别为「手动同步」和「停止所有同步」绑定快捷键。停止会取消当前及排队任务并关闭自动同步，保留主机勾选。",
-        "基本同步、排除文件和附加同步规则页签统一显示数量角标。"
-      ]
-    },
-    {
-      "title": "设备扫描",
-      "items": [
-        "按网卡查看结果，按主机名或 IP 搜索，并可组合筛选设备。已配置设备有单独标识。",
-        "双击主机名可打开共享根目录，未取得名称时使用 IP。扫描按钮旁的帮助入口提供 Windows 主机名查找说明。"
+        "通过「帮助 → 反馈问题 / 提需求」打开反馈中心，连接维护者提供的服务后可提交文字和图片。",
+        "发送失败时保留本机草稿，重试后可在「我的反馈」查看回复、处理进度和新版验证结果。"
       ]
     }
   ]
