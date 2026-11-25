@@ -1,31 +1,23 @@
 {
-  "version": "1.1.6",
-  "notes": "新增手动同步快捷键和可关闭的触发反馈，改进同步完成提示。修复后台检查覆盖同步结果、空闲时重复记录日志，以及偏好设置中的文字裁切。",
+  "version": "1.1.8",
+  "notes": "支持移除 Release 目录历史，新增停止同步快捷键，优化设备扫描及同步页签的数量显示。",
   "downloadUrl": "https://github.com/UUxxXxxUU/SyncTool/releases",
-  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.1.6",
-  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.1.6/RemoteReleaseSync-1.1.6-windows-x64-setup.exe",
+  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.1.8",
+  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.1.8/RemoteReleaseSync-1.1.8-windows-x64-setup.exe",
   "sections": [
     {
-      "title": "快捷键与同步提示",
+      "title": "同步与快捷键",
       "items": [
-        "在偏好设置中录入手动同步快捷键，可选仅主窗口或全局（含托盘）。检测到冲突时仍可保存。",
-        "快捷键反馈默认开启，可在偏好设置中关闭。提示显示在屏幕上方，支持鼠标穿透，不抢键盘焦点。",
-        "实际复制完成后显示 3 秒提示。多台主机的结果合并显示，成功提示带有一次轻微呼吸效果。"
+        "展开 Release 目录历史，右键移除条目，或高亮条目后按 Delete。移除操作会保存，当前目录仍可继续使用。",
+        "偏好设置可分别为「手动同步」和「停止所有同步」绑定快捷键。停止会取消当前及排队任务并关闭自动同步，保留主机勾选。",
+        "基本同步、排除文件和附加同步规则页签统一显示数量角标。"
       ]
     },
     {
-      "title": "同步状态与日志",
+      "title": "设备扫描",
       "items": [
-        "后台检查保留上一轮的同步结果、进度和错误详情，实际连接共享目录时才显示连接阶段。",
-        "后台轮询结果不变时减少重复日志，保留实际复制、异常和恢复记录。",
-        "修复偏好设置中无感更新说明裁切，窗口缩小时常规页支持滚动。"
-      ]
-    },
-    {
-      "title": "远程管理提示",
-      "items": [
-        "区分未填用户名和密码为空，失败时保留系统返回的错误和最后报告的进度。",
-        "已知问题：开启自启时，远程结果读取时序有时会造成界面误报。"
+        "按网卡查看结果，按主机名或 IP 搜索，并可组合筛选设备。已配置设备有单独标识。",
+        "双击主机名可打开共享根目录，未取得名称时使用 IP。扫描按钮旁的帮助入口提供 Windows 主机名查找说明。"
       ]
     }
   ]

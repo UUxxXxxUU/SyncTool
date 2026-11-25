@@ -217,8 +217,12 @@ $persisted = $false
 try { $unexpected = $root.GetTask($startupName); $persisted = $true }
 catch { if (($_.Exception.GetBaseException().HResult -band 0xffff) -ne 2) { throw } }
 if ($persisted) { $root.DeleteTask($startupName, 0) }
+$principalUser = $task.Principal.UserId
+if ($principalUser -notmatch '^S-\d-') {
+    $principalUser = (New-Object Security.Principal.NTAccount($principalUser)).Translate([Security.Principal.SecurityIdentifier]).Value
+}
 [Console]::WriteLine((@{ accepted = $true; persisted = $persisted; xml = $task.XmlText;
-    user_sid = $startupSid; principal_user = $task.Principal.UserId; logon_type = $task.Principal.LogonType } | ConvertTo-Json -Compress))
+    user_sid = $startupSid; principal_user = $principalUser; logon_type = $task.Principal.LogonType } | ConvertTo-Json -Compress))
 ''', encoding='utf-8-sig')
         result = json.loads(self.run_script(script).decode('utf-8-sig'))
         self.assertTrue(result['accepted'])
