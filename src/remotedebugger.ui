@@ -15,7 +15,7 @@
       <property name="rightMargin"><number>0</number></property>
       <property name="bottomMargin"><number>0</number></property>
       <item><widget class="QGroupBox" name="remoteGroup">
-       <property name="title"><string>远程主机安装与开机自启</string></property>
+       <property name="title"><string>远程主机安装与登录自启</string></property>
        <layout class="QVBoxLayout" name="remoteLayout">
         <item><widget class="QComboBox" name="remoteHostCombo">
          <property name="accessibleName"><string>需要管理的远程主机</string></property>
@@ -24,11 +24,24 @@
         </widget></item>
         <item><widget class="QLabel" name="remoteHint">
          <property name="wordWrap"><bool>true</bool></property>
-         <property name="text"><string>使用已保存主机的账号密码，工具版本和架构在下方选择。安装成功后默认开启自启并启动调试器；无需用户登录。关闭自启不会停止当前运行的调试器。无认证模式仅限可信局域网。</string></property>
+         <property name="text"><string>安装使用已保存的管理员凭据。指定账号下次登录远端 Windows 时会自动打开调试器窗口，可在窗口中退出。无认证模式仅限可信局域网。</string></property>
         </widget></item>
         <item><widget class="QLabel" name="credentialHint">
          <property name="wordWrap"><bool>true</bool></property>
          <property name="textFormat"><enum>Qt::PlainText</enum></property>
+        </widget></item>
+        <item><layout class="QHBoxLayout" name="startupUserLayout" stretch="0,1">
+         <item><widget class="QLabel" name="startupUserLabel">
+          <property name="text"><string>远端桌面账号</string></property>
+          <property name="buddy"><cstring>startupUserEdit</cstring></property>
+         </widget></item>
+         <item><widget class="QLineEdit" name="startupUserEdit">
+          <property name="placeholderText"><string>例如 用户名 或 域\用户名</string></property>
+          <property name="maxLength"><number>256</number></property>
+         </widget></item>
+        </layout></item>
+        <item><widget class="QCheckBox" name="stopLegacyStartupCheck">
+         <property name="text"><string>迁移时结束旧后台调试器（可能中断当前调试）</string></property>
         </widget></item>
         <item><layout class="QHBoxLayout" name="remoteButtons">
          <item><widget class="QPushButton" name="installRemoteButton"><property name="text"><string>远程静默安装</string></property></widget></item>

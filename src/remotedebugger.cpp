@@ -31,6 +31,7 @@
 #include <QScreen>
 #include <QSet>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QTemporaryFile>
 #include <QTemporaryDir>
@@ -287,7 +288,11 @@ RemoteDebugger::RemoteDebugger(QWidget *parent)
     });
     connect(m_ui->enableRemoteStartupButton, &QPushButton::clicked, this, [this]() { deploy("enable"); });
     connect(m_ui->disableRemoteStartupButton, &QPushButton::clicked, this, [this]() { deploy("disable"); });
-    connect(m_ui->remoteHostCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &RemoteDebugger::updateRemoteActions);
+    connect(m_ui->remoteHostCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() {
+        m_ui->startupUserEdit->clear();
+        m_ui->stopLegacyStartupCheck->setChecked(false);
+        updateRemoteActions();
+    });
     connect(m_ui->officialPageButton, &QPushButton::clicked, this, [this]() {
         QDesktopServices::openUrl(QUrl("https://learn.microsoft.com/zh-cn/visualstudio/debugger/remote-debugging"));
     });
@@ -302,7 +307,9 @@ void RemoteDebugger::setHosts(const QVector<HostEntry> &hosts, int selectedRow)
 {
     if (isDeploying()) return;
     const int previous = m_ui->remoteHostCombo->currentIndex();
-    const QString previousId = previous >= 0 && previous < m_hosts.size() ? m_hosts.at(previous).id : QString();
+    const HostEntry previousHost = previous >= 0 && previous < m_hosts.size() ? m_hosts.at(previous) : HostEntry();
+    const QString previousId = previousHost.id;
+    const QSignalBlocker blockHostChanges(m_ui->remoteHostCombo);
     m_hosts = hosts;
     m_ui->remoteHostCombo->clear();
     int selection = selectedRow;
@@ -314,6 +321,12 @@ void RemoteDebugger::setHosts(const QVector<HostEntry> &hosts, int selectedRow)
     }
     if (selection >= 0 && selection < m_hosts.size()) m_ui->remoteHostCombo->setCurrentIndex(selection);
     else if (!previousId.isEmpty()) m_ui->remoteHostCombo->setCurrentIndex(-1);
+    const int current = m_ui->remoteHostCombo->currentIndex();
+    if (current < 0 || current >= m_hosts.size() || m_hosts.at(current).id != previousId
+        || m_hosts.at(current).sharePath != previousHost.sharePath) {
+        m_ui->startupUserEdit->clear();
+        m_ui->stopLegacyStartupCheck->setChecked(false);
+    }
     updateRemoteActions();
 }
 
@@ -343,7 +356,7 @@ void RemoteDebugger::reject()
 
 void RemoteDebugger::updateRemoteActions()
 {
-    m_ui->remoteGroup->setTitle(QString("远程主机安装与开机自启 — %1 / %2")
+    m_ui->remoteGroup->setTitle(QString("远程主机安装与登录自启 — %1 / %2")
         .arg(m_ui->debuggerVersion->currentText(), m_ui->debuggerArchitecture->currentText()));
     const bool busy = isDeploying() || bool(m_download);
     const int row = m_ui->remoteHostCombo->currentIndex();
@@ -359,6 +372,8 @@ void RemoteDebugger::updateRemoteActions()
     m_ui->credentialHint->setText(hint);
     m_ui->credentialHint->setVisible(!hint.isEmpty());
     m_ui->remoteHostCombo->setEnabled(!busy);
+    m_ui->startupUserEdit->setEnabled(available);
+    m_ui->stopLegacyStartupCheck->setEnabled(available);
     m_ui->installRemoteButton->setEnabled(available);
     m_ui->browseRemoteInstallerButton->setEnabled(!busy);
     m_ui->enableRemoteStartupButton->setEnabled(available);
@@ -395,6 +410,14 @@ void RemoteDebugger::deploy(const QString &operation)
         setRemoteStatus("主机配置无效：尚未填写远程管理用户名，请在主窗口编辑并保存主机。");
         return;
     }
+    const bool configureStartup = operation == "install" || operation == "enable";
+    const QString startupUser = configureStartup ? m_ui->startupUserEdit->text().trimmed() : QString();
+    const bool stopLegacyStartup = configureStartup && m_ui->stopLegacyStartupCheck->isChecked();
+    if (configureStartup && startupUser.isEmpty()) {
+        setRemoteStatus("请填写实际登录远端 Windows 桌面的账号。");
+        m_ui->startupUserEdit->setFocus();
+        return;
+    }
     QString installer;
     if (operation == "install") {
         const QString name = QString("VS_RemoteTools_%1_%2").arg(m_ui->debuggerVersion->currentText().section(' ', -1),
@@ -422,6 +445,11 @@ void RemoteDebugger::deploy(const QString &operation)
         || m_hosts.at(currentRow).sharePath != host.sharePath || m_hosts.at(currentRow).username != host.username
         || m_hosts.at(currentRow).password != host.password) {
         setRemoteStatus("主机配置在选择安装包期间发生变化，请核对目标主机后重新操作。");
+        return;
+    }
+    if (configureStartup && (startupUser != m_ui->startupUserEdit->text().trimmed()
+        || stopLegacyStartup != m_ui->stopLegacyStartupCheck->isChecked())) {
+        setRemoteStatus("登录自启设置已变化，请核对后重新操作。");
         return;
     }
     QFile script(":/remote-deploy.ps1"), bootstrap(":/remote-bootstrap.ps1");
@@ -453,12 +481,17 @@ void RemoteDebugger::deploy(const QString &operation)
     request.insert("server", server);
     request.insert("username", host.username.trimmed());
     request.insert("password", host.password);
+    if (configureStartup) {
+        request.insert("startup_user", startupUser);
+        request.insert("stop_legacy_startup", stopLegacyStartup);
+    }
     request.insert("major", m_ui->debuggerVersion->currentData().toInt());
     request.insert("architecture", m_ui->debuggerArchitecture->currentText());
     request.insert("installer", QDir::toNativeSeparators(installer));
     request.insert("bootstrap", QString::fromLatin1(bootstrap.readAll().toBase64()));
     const QByteArray payload = QJsonDocument(request).toJson(QJsonDocument::Compact);
     startDeploymentProcess(scriptFile.fileName(), payload);
+    if (isDeploying()) m_ui->stopLegacyStartupCheck->setChecked(false);
 }
 
 void RemoteDebugger::startDeploymentProcess(const QString &scriptPath, const QByteArray &payload)

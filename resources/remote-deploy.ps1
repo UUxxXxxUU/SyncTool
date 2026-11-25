@@ -51,6 +51,11 @@ try {
     if ($request.server -notmatch '^[a-zA-Z0-9_.-]{1,253}$' -or $request.server.Contains('..')) { throw '主机名或 IPv4 地址无效。' }
     if ([string]::IsNullOrWhiteSpace($request.username)) { throw '请在远程主机编辑中保存管理员账号。' }
     if ($request.major -notin @(15, 16, 17, 18) -or $request.architecture -notin @('x86', 'x64', 'ARM64')) { throw '版本或架构无效。' }
+    if ($request.operation -ne 'disable' -and ($request.startup_user -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($request.startup_user) -or $request.startup_user.Length -gt 256 -or
+        $request.startup_user -match '[\x00-\x1f]' -or $request.stop_legacy_startup -isnot [bool])) {
+        throw '远端桌面账号或迁移选项无效。'
+    }
 
     $account = [string]$request.username
     $user = $account
@@ -69,11 +74,11 @@ try {
 
     if ($request.operation -eq 'disable') {
         $startup = Get-OwnedTask $startupName
-        if ($null -eq $startup) { Send-Status 'result' '未配置本程序管理的开机自启，无需关闭。' $true }
+        if ($null -eq $startup) { Send-Status 'result' '未配置本程序管理的调试器自启，无需关闭。' $true }
         else {
             $startup.Enabled = $false
             if ($startup.Enabled) { throw '关闭自启后状态回读不一致。' }
-            Send-Status 'result' '已关闭开机自启。当前运行的调试器继续运行。' $true
+            Send-Status 'result' '已关闭调试器自启。当前运行的调试器继续运行。' $true
         }
         return
     }
@@ -164,13 +169,14 @@ try {
     $utf8 = New-Object System.Text.UTF8Encoding($true)
     $bootstrap = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$request.bootstrap)).TrimStart([char]0xfeff)
     [System.IO.File]::WriteAllText((Join-Path $stageUnc 'deploy.ps1'), $bootstrap, $utf8)
-    $parameters = @{ operation = $request.operation; major = $request.major; architecture = $request.architecture; sha256 = $hash; run = $request.run }
+    $parameters = @{ operation = $request.operation; major = $request.major; architecture = $request.architecture
+        sha256 = $hash; run = $request.run; startup_user = $request.startup_user; stop_legacy_startup = $request.stop_legacy_startup }
     [System.IO.File]::WriteAllText((Join-Path $stageUnc 'parameters.json'), ($parameters | ConvertTo-Json -Compress), $utf8)
     if ($request.operation -eq 'install') {
         Send-Status 'progress' '权限检查通过，正在向远程管理员临时目录复制安装包…'
         Copy-Item -LiteralPath $package.FullName -Destination (Join-Path $stage 'RemoteTools.exe')
     }
-    Send-Status 'progress' '正在远程执行，请等待安装、启动和状态检查完成…'
+    Send-Status 'progress' '正在远程执行，请等待配置结果…'
     $runRequested = $true
     $running = $job.Run($null)
     if ($null -eq $running) { throw '远程任务未返回运行实例，执行状态未知。' }
@@ -195,7 +201,7 @@ try {
             if ($null -eq $result -or $result.success -isnot [bool] -or $result.message -isnot [string] -or [string]::IsNullOrWhiteSpace($result.message)) {
                 throw '远程结果文件无效，请检查主机状态。'
             }
-            if (-not $result.success) {
+            if (-not $result.success -and $result.legacy_stop_confirmation_required -ne $true) {
                 $keepStage = $true
                 $result.message += ' 已保留临时诊断目录：' + $stageUnc
             }

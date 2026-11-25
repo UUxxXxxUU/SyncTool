@@ -14,6 +14,8 @@
 #include <QMenuBar>
 #include <QPushButton>
 #include <QShortcut>
+#include <QSignalBlocker>
+#include <QStackedWidget>
 #include <QVBoxLayout>
 #include <algorithm>
 #ifdef Q_OS_WIN
@@ -282,64 +284,113 @@ ShortcutPreferences::ShortcutPreferences(ShortcutManager &manager, const QVector
     auto *hint = new QLabel(QStringLiteral("点击“录入”后按组合键，也可直接输入，例如 Ctrl+Alt+S。"), this);
     hint->setWordWrap(true);
     layout->addWidget(hint);
-    auto *grid = new QGridLayout;
-    layout->addLayout(grid);
-    grid->addWidget(new QLabel(QStringLiteral("操作")), 0, 0);
-    grid->addWidget(new QLabel(QStringLiteral("快捷键")), 0, 1);
-    grid->addWidget(new QLabel(QStringLiteral("生效范围")), 0, 4);
-    int line = 1;
+    auto *selectors = new QGridLayout;
+    layout->addLayout(selectors);
+    m_group = new QComboBox(this);
+    m_group->setObjectName("shortcutGroup");
+    m_command = new QComboBox(this);
+    m_command->setObjectName("shortcutCommand");
+    auto *groupLabel = new QLabel(QStringLiteral("分组"), this);
+    groupLabel->setBuddy(m_group);
+    auto *commandLabel = new QLabel(QStringLiteral("命令"), this);
+    commandLabel->setBuddy(m_command);
+    selectors->addWidget(groupLabel, 0, 0);
+    selectors->addWidget(m_group, 0, 1);
+    selectors->addWidget(commandLabel, 1, 0);
+    selectors->addWidget(m_command, 1, 1);
+    m_pages = new QStackedWidget(this);
+    layout->addWidget(m_pages);
     for (const auto &command : manager.commands()) {
-        auto *keys = new KeyField(this);
+        const QString group = command.group.isEmpty() ? QStringLiteral("常规") : command.group;
+        if (m_group->findText(group, Qt::MatchExactly) < 0) m_group->addItem(group);
+        auto *page = new QWidget(m_pages);
+        auto *grid = new QGridLayout(page);
+        grid->setContentsMargins(0, 0, 0, 0);
+        auto *keys = new KeyField(page);
         keys->setObjectName(command.id + "Keys");
         keys->setPlaceholderText(QStringLiteral("未绑定"));
-        auto *scope = new QComboBox(this);
+        auto *scope = new QComboBox(page);
         scope->setObjectName(command.id + "Scope");
         scope->addItems({QStringLiteral("仅主窗口"), QStringLiteral("全局（含托盘）")});
-        auto *record = new QPushButton(QStringLiteral("录入"), this);
+        auto *record = new QPushButton(QStringLiteral("录入"), page);
         record->setObjectName(command.id + "Record");
-        auto *clear = new QPushButton(QStringLiteral("清除"), this);
+        auto *clear = new QPushButton(QStringLiteral("清除"), page);
         clear->setObjectName(command.id + "Clear");
-        auto *warning = new QLabel(this);
+        auto *warning = new QLabel(page);
         warning->setObjectName(command.id + "Warning");
         warning->setWordWrap(true);
         warning->setTextFormat(Qt::PlainText);
         warning->setStyleSheet("color: #925800;");
         for (const auto &b : saved) if (b.action == command.id) { keys->setText(b.keys); scope->setCurrentIndex(b.global); break; }
-        const Row row{command.id, keys, scope, warning};
-        m_rows.append(row);
-        grid->addWidget(new QLabel(command.title), line, 0);
-        grid->addWidget(keys, line, 1);
-        grid->addWidget(record, line, 2);
-        grid->addWidget(clear, line, 3);
-        grid->addWidget(scope, line, 4);
-        grid->addWidget(warning, ++line, 1, 1, 4);
-        ++line;
+        const Editor editor{command.id, command.title, group, keys, scope, warning};
+        m_editors.append(editor);
+        m_pages->addWidget(page);
+        auto *keysLabel = new QLabel(QStringLiteral("快捷键"), page);
+        keysLabel->setBuddy(keys);
+        auto *scopeLabel = new QLabel(QStringLiteral("生效范围"), page);
+        scopeLabel->setBuddy(scope);
+        grid->addWidget(keysLabel, 0, 0);
+        grid->addWidget(keys, 0, 1);
+        grid->addWidget(record, 0, 2);
+        grid->addWidget(clear, 0, 3);
+        grid->addWidget(scopeLabel, 1, 0);
+        grid->addWidget(scope, 1, 1, 1, 3);
+        grid->addWidget(warning, 2, 1, 1, 3);
+        grid->setColumnStretch(1, 1);
         connect(record, &QPushButton::clicked, keys, &KeyField::record);
         connect(clear, &QPushButton::clicked, keys, &QLineEdit::clear);
-        connect(keys, &QLineEdit::textChanged, this, [this, row]() { edited(row); });
-        connect(scope, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, row]() { edited(row); });
+        connect(keys, &QLineEdit::textChanged, this, [this, editor]() { edited(editor); });
+        connect(scope, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, editor]() { edited(editor); });
         warning->setText(manager.warning(saved, {command.id, keys->text(), scope->currentIndex() == 1}, true));
         warning->setVisible(!warning->text().isEmpty());
     }
-    grid->setColumnStretch(1, 1);
+    connect(m_group, &QComboBox::currentTextChanged, this, [this]() { showCommands(); });
+    connect(m_command, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+        if (index >= 0) m_pages->setCurrentIndex(m_command->itemData(index).toInt());
+    });
+    showCommands();
     layout->addStretch();
 }
 
-void ShortcutPreferences::edited(const Row &row)
+void ShortcutPreferences::showCommands()
 {
-    m_draft.erase(std::remove_if(m_draft.begin(), m_draft.end(), [&](const ShortcutBinding &b) { return b.action == row.action; }), m_draft.end());
-    const QString text = row.keys->text().trimmed();
+    const QSignalBlocker blocker(m_command);
+    m_command->clear();
+    for (int index = 0; index < m_editors.size(); ++index) {
+        const auto &editor = m_editors.at(index);
+        if (editor.group == m_group->currentText()) m_command->addItem(editor.title, index);
+    }
+    if (m_command->count()) m_pages->setCurrentIndex(m_command->currentData().toInt());
+}
+
+void ShortcutPreferences::edited(const Editor &editor)
+{
+    const QString text = editor.keys->text().trimmed();
     const QString canonical = ShortcutManager::normalized(text);
-    if (!text.isEmpty()) m_draft.append({row.action, canonical.isEmpty() ? text : canonical, row.scope->currentIndex() == 1});
-    for (const auto &item : m_rows) {
+    const QString keys = canonical.isEmpty() ? text : canonical;
+    const bool global = editor.scope->currentIndex() == 1;
+    const auto existing = std::find_if(m_draft.begin(), m_draft.end(), [&](const ShortcutBinding &b) { return b.action == editor.action; });
+    if (existing != m_draft.end() && existing->keys == keys) {
+        existing->global = global;
+    } else {
+        if (existing != m_draft.end()) m_draft.erase(existing);
+        if (!keys.isEmpty()) m_draft.append({editor.action, keys, global});
+    }
+    for (const auto &item : m_editors) {
         item.warning->setText(m_manager.warning(m_draft, {item.action, item.keys->text(), item.scope->currentIndex() == 1}, true));
         item.warning->setVisible(!item.warning->text().isEmpty());
     }
 }
 
-bool ShortcutPreferences::valid() const
+bool ShortcutPreferences::validate()
 {
-    for (const auto &row : m_rows)
-        if (!row.keys->text().trimmed().isEmpty() && ShortcutManager::normalized(row.keys->text()).isEmpty()) return false;
+    for (int index = 0; index < m_editors.size(); ++index) {
+        const auto &editor = m_editors.at(index);
+        if (editor.keys->text().trimmed().isEmpty() || !ShortcutManager::normalized(editor.keys->text()).isEmpty()) continue;
+        m_group->setCurrentText(editor.group);
+        m_command->setCurrentIndex(m_command->findData(index));
+        editor.keys->setFocus();
+        return false;
+    }
     return true;
 }

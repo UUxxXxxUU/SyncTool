@@ -12,6 +12,7 @@
 #include "synccompletiontoast.h"
 
 #include <QtTest>
+#include <QAbstractItemView>
 #include <QAction>
 #include <QCheckBox>
 #include <QClipboard>
@@ -260,6 +261,65 @@ private slots:
         QCOMPARE(types, QStringList({"png", "qm"}));
         QVERIFY(!SyncPlan::normalizeTypes({"*"}, &types, &error));
     }
+    void releaseHistoryRemovalPreservesCurrentDirectory()
+    {
+        auto main = window();
+        AppConfig config = ConfigManager::load(configPath());
+        const QString current = QDir::toNativeSeparators(source());
+        const QString old = QDir::toNativeSeparators(root() + "/old Release");
+        config.releaseDir = current;
+        config.releaseDirHistory = QStringList{current, old, QDir::fromNativeSeparators(old).toUpper()};
+        QString error;
+        QVERIFY2(ConfigManager::save(configPath(), config, &error), qPrintable(error));
+        main->loadConfiguration();
+        main->show();
+        QVERIFY(QTest::qWaitForWindowExposed(main.get()));
+        auto *combo = main->m_releaseDirEdit;
+        auto *history = combo->view();
+        QCOMPARE(combo->count(), 3);
+
+        combo->showPopup();
+        const QRect oldRow = history->visualRect(combo->model()->index(1, 0));
+        QVERIFY(oldRow.isValid());
+        bool menuShown = false;
+        QTimer chooseRemoval;
+        connect(&chooseRemoval, &QTimer::timeout, main.get(), [&]() {
+            auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            if (!menu) return;
+            chooseRemoval.stop();
+            QTimer::singleShot(2000, menu, &QMenu::close);
+            if (menu->actions().size() != 1 || menu->actions().first()->text() != "移除这条历史记录") {
+                menu->close();
+                return;
+            }
+            menuShown = true;
+            menu->setActiveAction(menu->actions().first());
+            QTest::keyClick(menu, Qt::Key_Return);
+        });
+        chooseRemoval.start(10);
+        QTest::mouseClick(history->viewport(), Qt::RightButton, Qt::NoModifier, oldRow.center());
+        chooseRemoval.stop();
+        QVERIFY(menuShown);
+        QCOMPARE(combo->count(), 1);
+        QCOMPARE(combo->currentText(), current);
+        QCOMPARE(ConfigManager::load(configPath()).releaseDirHistory, QStringList{current});
+
+        combo->showPopup();
+        history->setCurrentIndex(combo->model()->index(0, 0));
+        QTest::keyClick(history, Qt::Key_Delete);
+        QCOMPARE(combo->count(), 0);
+        QCOMPARE(combo->currentText(), current);
+        QVERIFY(QMetaObject::invokeMethod(combo->lineEdit(), "editingFinished", Qt::DirectConnection));
+        main->loadConfiguration();
+        QCOMPARE(combo->count(), 0);
+        QCOMPARE(combo->currentText(), current);
+        QCOMPARE(ConfigManager::load(configPath()).releaseDir, current);
+
+        QVERIFY(QMetaObject::invokeMethod(combo->lineEdit(), "returnPressed", Qt::DirectConnection));
+        QCOMPARE(combo->count(), 1);
+        QCOMPARE(ConfigManager::load(configPath()).releaseDirHistory, QStringList{current});
+    }
+
     void oldConfigurationAndRulesRoundTrip()
     {
         const QByteArray legacy = "{\"releaseDir\":\"D:/legacy/Release\",\"fileTypes\":[\"exe\",\"dll\"],"
@@ -432,6 +492,32 @@ private slots:
         QCOMPARE(run.copied.size(), 240);
         QCOMPARE(QDir(target()).entryList({"*.exe"}, QDir::Files).size(), 240);
     }
+#ifdef Q_OS_WIN
+    void shortcutsDoNotBlockSync()
+    {
+        const QString app = source() + "/app.exe";
+        const QString oldTarget = root() + "/old.exe";
+        const QString remoteShortcut = target() + "/app.exe - 快捷方式.lnk";
+        QVERIFY(writeFile(app, "EXE"));
+        QVERIFY(writeFile(oldTarget));
+        QVERIFY(QFile::link(oldTarget, source() + "/old.lnk"));
+        QVERIFY(QFile::remove(oldTarget));
+        QVERIFY(QFile::link(app, remoteShortcut));
+
+        const Run run = runWorker(source(), target(), {}, {{".", {}}});
+        QVERIFY2(run.state == SyncWorker::InSync, qPrintable(run.detail));
+        QCOMPARE(readFile(target() + "/app.exe"), QByteArray("EXE"));
+        QCOMPARE(run.copied, QStringList{"app.exe"});
+        QVERIFY(QFileInfo::exists(remoteShortcut));
+
+        QVector<SyncPlan::Scope> scopes;
+        QString error;
+        QVERIFY(!SyncPlan::build(source(), target(), {}, {{"old.lnk", {}}}, &scopes, &error));
+        QVERIFY2(error.contains("快捷方式"), qPrintable(error));
+        QVERIFY(!SyncPlan::build(source(), target(), {"*.LNK"}, {}, &scopes, &error));
+        QVERIFY2(error.contains("快捷方式"), qPrintable(error));
+    }
+#endif
     void junctionIsRejected()
     {
         QVERIFY(writeFile(source() + "/real/file.exe"));
@@ -857,6 +943,57 @@ private slots:
         QVERIFY(QTest::qWaitForWindowActive(main.get()));
         QTest::keyClick(main.get(), Qt::Key_F7, Qt::ControlModifier);
         QCOMPARE(afterReload.size(), 1);
+    }
+
+    void stopShortcutUsesTheExistingStopButton()
+    {
+        auto main = window({}, true);
+        HostEntry disabled = main->m_config.hosts.first();
+        disabled.id = "qa-disabled";
+        disabled.enabled = false;
+        main->m_config.hosts.append(disabled);
+        main->refreshHostTable();
+        main->show();
+        QTimer::singleShot(0, main.get(), [&]() {
+            auto *preferences = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            QVERIFY(preferences);
+            QTimer::singleShot(5000, preferences, &QDialog::reject);
+            auto *tabs = preferences->findChild<QTabWidget *>("preferencesTabs");
+            QVERIFY(tabs);
+            tabs->setCurrentWidget(preferences->findChild<QWidget *>("shortcutsTab"));
+            auto *group = preferences->findChild<QComboBox *>("shortcutGroup");
+            auto *command = preferences->findChild<QComboBox *>("shortcutCommand");
+            QVERIFY(group && command);
+            QCOMPARE(group->currentText(), QString("同步"));
+            QCOMPARE(command->count(), 2);
+            command->setCurrentText("停止所有同步");
+            auto *keys = preferences->findChild<QLineEdit *>("stopSyncKeys");
+            QVERIFY(keys && keys->isVisible() && keys->text().isEmpty());
+            keys->setText("Ctrl+F8");
+            preferences->findChild<QDialogButtonBox *>("buttonBox")->button(QDialogButtonBox::Save)->click();
+        });
+        main->showPreferences();
+        const auto bindings = ConfigManager::load(configPath()).shortcuts;
+        QCOMPARE(bindings.size(), 1);
+        QCOMPARE(bindings.first().action, QString("stopSync"));
+        main->m_pendingSyncAfterCurrentRun = true;
+        main->m_pendingShortcut = true;
+        auto *button = main->findChild<QPushButton *>("stopButton");
+        QSignalSpy clicks(button, &QPushButton::clicked);
+        main->activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(main.get()));
+        QTest::keyClick(main.get(), Qt::Key_F8, Qt::ControlModifier);
+        QCOMPARE(clicks.count(), 1);
+        QVERIFY(main->m_backgroundTasksPaused);
+        QVERIFY(!main->m_pendingSyncAfterCurrentRun);
+        QVERIFY(!main->m_pendingShortcut);
+        const AppConfig saved = ConfigManager::load(configPath());
+        QVERIFY(!saved.autoSync);
+        QCOMPARE(saved.hosts.size(), 2);
+        QVERIFY(saved.hosts.at(0).enabled);
+        QVERIFY(!saved.hosts.at(1).enabled);
+        QCOMPARE(main->m_hostTable->item(0, 0)->checkState(), Qt::Checked);
+        QCOMPARE(main->m_hostTable->item(1, 0)->checkState(), Qt::Unchecked);
     }
 
     void shortcutCommandsResolveInBindingOrderAndRespectWindowScope()
@@ -1394,6 +1531,52 @@ private slots:
         const auto fingerprint = SyncPlan::fingerprint(source(), {"dll", "pdb"}, config.syncRules, patterns);
         QVERIFY(writeFile(source() + "/SKIP.dll", "excluded source changed"));
         QCOMPARE(SyncPlan::fingerprint(source(), {"dll", "pdb"}, config.syncRules, patterns), fingerprint);
+    }
+
+    void synchronizationTabBadgesCountValidEntries()
+    {
+        auto main = window({{"./Lang", {"qm"}}});
+        auto *tabs = main->findChild<QTabWidget *>("syncTabs");
+        auto *types = main->findChild<QListWidget *>("typeList");
+        auto *exclusions = main->findChild<QPlainTextEdit *>("exclusionsEdit");
+        QVERIFY(tabs && types && exclusions);
+        const auto badge = [tabs](const char *page) {
+            const int index = tabs->indexOf(tabs->findChild<QWidget *>(page));
+            const auto *label = qobject_cast<QLabel *>(tabs->tabBar()->tabButton(index, QTabBar::RightSide));
+            return label ? label->text() : QString();
+        };
+        QCOMPARE(badge("basicTab"), QString("1"));
+        QCOMPARE(badge("rulesTab"), QString("1"));
+        QVERIFY(badge("exclusionsTab").isEmpty());
+        main->show();
+        auto *tabBar = tabs->tabBar();
+        const int basic = tabs->indexOf(tabs->findChild<QWidget *>("basicTab"));
+        auto *basicBadge = tabBar->tabButton(basic, QTabBar::RightSide);
+        QVERIFY(basicBadge);
+        QTRY_COMPARE(basicBadge->y(), tabBar->tabRect(basic).top() + 3);
+        QCOMPARE(tabBar->tabRect(basic).right() - basicBadge->geometry().right(), 6);
+        tabs->setCurrentIndex(tabs->indexOf(tabs->findChild<QWidget *>("rulesTab")));
+        const QPoint badgeCenter = basicBadge->geometry().center();
+        QCOMPARE(tabBar->tabAt(badgeCenter), basic);
+        QVERIFY(basicBadge->testAttribute(Qt::WA_TransparentForMouseEvents));
+        QTest::mouseClick(tabBar, Qt::LeftButton, Qt::NoModifier, badgeCenter);
+        QCOMPARE(tabs->currentIndex(), basic);
+        exclusions->setPlainText("*.pdb；skip.dll\n*.PDB");
+        QCOMPARE(badge("exclusionsTab"), QString("2"));
+        QStringList patterns;
+        for (int suffix = 0; suffix < 12; ++suffix) patterns.append(QString("skip%1.dll").arg(suffix));
+        exclusions->setPlainText(patterns.join('\n'));
+        QCOMPARE(badge("exclusionsTab"), QString("12"));
+        for (int tab = 0; tab < tabs->count(); ++tab) {
+            auto *indicator = tabBar->tabButton(tab, QTabBar::RightSide);
+            QVERIFY(indicator);
+            QTRY_COMPARE(indicator->y(), tabBar->tabRect(tab).top() + 3);
+            QCOMPARE(tabBar->tabRect(tab).right() - indicator->geometry().right(), 6);
+        }
+        exclusions->setPlainText("wrong/path");
+        QVERIFY(badge("exclusionsTab").isEmpty());
+        for (int row = 0; row < types->count(); ++row) types->item(row)->setCheckState(Qt::Unchecked);
+        QVERIFY(badge("basicTab").isEmpty());
     }
 
     void tabSwitchKeepsLayoutAndShowsExclusionExample()
@@ -2063,6 +2246,60 @@ private slots:
         QVERIFY(!wrongThread.load());
     }
 
+    void scanResultFiltersAndShareBrowsingPreserveSelectionSafety()
+    {
+        NetworkHostDialog dialog(nullptr, false);
+        auto *tabs = dialog.m_adapterTabs;
+        tabs->setTabData(tabs->addTab("全部"), -1);
+        tabs->setTabData(tabs->addTab("网卡 A"), 1);
+        tabs->setTabData(tabs->addTab("网卡 B"), 2);
+        tabs->setCurrentIndex(0);
+        dialog.setConfiguredServers({"DESKTOP-QA.", "fe80--1s2.ipv6-literal.net"});
+        const int named = dialog.insertHost({QHostAddress("192.0.2.1"), {}, "网卡 A", 1}, true);
+        const int unnamed = dialog.insertHost({QHostAddress("192.0.2.2"), {}, "网卡 A", 1}, false);
+        const int ipv6 = dialog.insertHost({QHostAddress("fe80::1%2"), {}, "网卡 B", 2}, true);
+        dialog.setResolvedName(named, "desktop-qa");
+        dialog.setResolvedName(named, "desktop-qa.example");
+        QCOMPARE(dialog.m_table->item(named, 4)->text(), QString("已配置"));
+        QCOMPARE(dialog.m_table->item(ipv6, 4)->text(), QString("已配置"));
+        dialog.m_table->item(unnamed, 0)->setData(NetworkHostDialog::DnsPending, true);
+        dialog.m_hideUnnamed->setChecked(true);
+        QVERIFY(!dialog.m_table->isRowHidden(unnamed));
+        dialog.finishNameLookup(unnamed, NetworkHostDialog::DnsPending);
+        dialog.finishNameLookup(ipv6, NetworkHostDialog::DnsPending);
+        QVERIFY(dialog.m_table->isRowHidden(unnamed));
+        QVERIFY(!dialog.m_table->isRowHidden(ipv6));
+        dialog.m_onlySmb->setChecked(true);
+        dialog.m_onlyConfigured->setChecked(true);
+        dialog.m_table->selectRow(named);
+        QCOMPARE(dialog.selectedServer(), QString("desktop-qa.example"));
+        dialog.m_search->setText("FE80");
+        QVERIFY(dialog.selectedServer().isEmpty());
+        QVERIFY(!dialog.m_selectButton->isEnabled());
+        QCOMPARE(dialog.m_visibleCount, 1);
+        tabs->setCurrentIndex(1);
+        QCOMPARE(dialog.m_visibleCount, 0);
+        dialog.m_search->setText("TOP-QA");
+        QCOMPARE(dialog.m_visibleCount, 1);
+        QSignalSpy browse(&dialog, &NetworkHostDialog::browseSharesRequested);
+        QSignalSpy accepted(&dialog, &QDialog::accepted);
+        dialog.browseShares(named, 1);
+        dialog.browseShares(ipv6, 0);
+        QCOMPARE(browse.count(), 0);
+        dialog.browseShares(named, 0);
+        QCOMPARE(browse.count(), 1);
+        QCOMPARE(browse.takeFirst().at(0).toString(), QStringLiteral("\\\\desktop-qa.example\\"));
+        tabs->setCurrentIndex(2);
+        dialog.m_search->clear();
+        dialog.browseShares(ipv6, 0);
+        QCOMPARE(browse.count(), 1);
+        QCOMPARE(browse.takeFirst().at(0).toString(), QStringLiteral("\\\\fe80--1s2.ipv6-literal.net\\"));
+        QCOMPARE(accepted.count(), 0);
+        dialog.m_table->selectRow(ipv6);
+        dialog.m_selectButton->click();
+        QCOMPARE(accepted.count(), 1);
+    }
+
     void networkDiscoveryFindsExplicitlyAuthorizedHost()
     {
         const QString server = qEnvironmentVariable("SYNC_QA_AUTHORIZED_REMOTE");
@@ -2076,6 +2313,7 @@ private slots:
         QVERIFY(QTest::qWaitForWindowExposed(&dialog));
         QTRY_VERIFY_WITH_TIMEOUT(!dialog.m_scanning && dialog.m_inFlight == 0, 180000);
         QTest::qWait(5500);
+        dialog.m_adapterTabs->setCurrentIndex(0);
         int selectedRow = -1;
         for (int row = 0; row < dialog.m_table->rowCount(); ++row) {
             if (QHostAddress(dialog.m_table->item(row, 1)->text()) == expected) { selectedRow = row; break; }
@@ -2136,6 +2374,11 @@ private slots:
         dialog.setHosts({first, second}, 1);
         auto *combo = dialog.findChild<QComboBox *>("remoteHostCombo");
         QVERIFY(combo);
+        auto *startupUser = dialog.findChild<QLineEdit *>("startupUserEdit");
+        auto *stopLegacy = dialog.findChild<QCheckBox *>("stopLegacyStartupCheck");
+        QVERIFY(startupUser && stopLegacy);
+        startupUser->setText("qa-desktop");
+        stopLegacy->setChecked(true);
         auto *credentialHint = dialog.findChild<QLabel *>("credentialHint");
         QVERIFY(credentialHint && credentialHint->text().contains("密码为空"));
         QCOMPARE(combo->currentIndex(), 1);
@@ -2143,11 +2386,14 @@ private slots:
         dialog.setHosts({first, second}, -1);
         QCOMPARE(combo->currentIndex(), 1);
         QCOMPARE(dialog.m_hosts.at(1).username, QString("changed-user"));
+        QCOMPARE(startupUser->text(), QString("qa-desktop"));
         dialog.deploy("enable");
         QVERIFY(!dialog.isDeploying());
         QVERIFY(dialog.findChild<QLabel *>("remoteStatus")->text().contains("无效"));
         dialog.setHosts({first}, -1);
         QCOMPARE(combo->currentIndex(), -1);
+        QVERIFY(startupUser->text().isEmpty());
+        QVERIFY(!stopLegacy->isChecked());
         QVERIFY(!dialog.findChild<QPushButton *>("installRemoteButton")->isEnabled());
         first.sharePath = QStringLiteral("//reserved.invalid/share");
         first.username.clear();
@@ -2162,6 +2408,9 @@ private slots:
         first.password = "test-only";
         dialog.setHosts({first}, 0);
         QVERIFY(credentialHint->isHidden());
+        dialog.deploy("enable");
+        QVERIFY(!dialog.isDeploying());
+        QVERIFY(dialog.findChild<QLabel *>("remoteStatus")->text().contains("远端 Windows 桌面的账号"));
     }
 
     void deploymentOnExplicitlyAuthorizedSavedRemoteHost()
@@ -2204,6 +2453,10 @@ private slots:
         }};
         RemoteDebugger dialog;
         dialog.setHosts({selected}, 0);
+        if (operation != "disable") {
+            dialog.findChild<QLineEdit *>("startupUserEdit")->setText(
+                qEnvironmentVariable("SYNC_QA_REMOTE_DESKTOP_USER", selected.username));
+        }
         auto *versions = dialog.findChild<QComboBox *>("debuggerVersion");
         auto *architectures = dialog.findChild<QComboBox *>("debuggerArchitecture");
         QVERIFY(versions && architectures);
@@ -2285,6 +2538,7 @@ private slots:
         host.id = "qa-local-launch"; host.name = "本机脚本启动验证";
         host.sharePath = "//127.0.0.1/QA-unused"; host.username = "qa-unused"; host.password = "QA-stdin-only-秘密";
         dialog.setHosts({host}, 0);
+        dialog.findChild<QLineEdit *>("startupUserEdit")->setText("qa-desktop");
         auto *versions = dialog.findChild<QComboBox *>("debuggerVersion");
         auto *architectures = dialog.findChild<QComboBox *>("debuggerArchitecture");
         QVERIFY(versions && architectures);

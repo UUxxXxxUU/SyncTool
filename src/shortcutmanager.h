@@ -10,11 +10,12 @@ class QShortcut;
 class QLineEdit;
 class QComboBox;
 class QLabel;
+class QStackedWidget;
 
 class ShortcutManager : public QAbstractNativeEventFilter
 {
 public:
-    struct Command { QString id, title; std::function<void()> invoke; };
+    struct Command { QString id, title; std::function<void()> invoke; QString group; };
     explicit ShortcutManager(QWidget *window);
     ~ShortcutManager() override;
     void add(Command command);
@@ -45,11 +46,20 @@ class ShortcutPreferences : public QWidget
 public:
     ShortcutPreferences(ShortcutManager &manager, const QVector<ShortcutBinding> &saved, QWidget *parent);
     const QVector<ShortcutBinding> &bindings() const { return m_draft; }
-    bool valid() const;
+    bool validate();
 private:
-    struct Row { QString action; QLineEdit *keys; QComboBox *scope; QLabel *warning; };
-    void edited(const Row &row);
+    struct Editor {
+        QString action, title, group;
+        QLineEdit *keys;
+        QComboBox *scope;
+        QLabel *warning;
+    };
+    void showCommands();
+    void edited(const Editor &editor);
     ShortcutManager &m_manager;
-    QVector<Row> m_rows;
+    QVector<Editor> m_editors;
     QVector<ShortcutBinding> m_draft;
+    QComboBox *m_group = nullptr;
+    QComboBox *m_command = nullptr;
+    QStackedWidget *m_pages = nullptr;
 };

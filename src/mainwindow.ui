@@ -313,6 +313,8 @@
                             <item><widget class="QPushButton" name="scanHostsButton"><property name="text"><string>扫描设备</string></property></widget></item>
                             <item><widget class="QToolButton" name="hostnameHelpButton">
                               <property name="text"><string>?</string></property>
+                              <property name="focusPolicy"><enum>Qt::StrongFocus</enum></property>
+                              <property name="cursor"><cursorShape>PointingHandCursor</cursorShape></property>
                               <property name="toolTip"><string>如何查看主机名（Windows 10 / 11 图文说明）</string></property>
                               <property name="accessibleName"><string>查看主机名图文帮助</string></property>
                             </widget></item>
@@ -601,6 +603,8 @@
     <tabstop>removeRuleButton</tabstop>
     <tabstop>rulePreview</tabstop>
     <tabstop>hostPathEdit</tabstop>
+    <tabstop>scanHostsButton</tabstop>
+    <tabstop>hostnameHelpButton</tabstop>
     <tabstop>hostNameEdit</tabstop>
     <tabstop>hostUserEdit</tabstop>
     <tabstop>hostPasswordEdit</tabstop>

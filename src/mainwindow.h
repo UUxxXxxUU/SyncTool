@@ -99,7 +99,7 @@ private slots:
     void pollForChanges();
     void trayIconActivated(QSystemTrayIcon::ActivationReason reason);
     void realExit();
-    void onReleaseDirEditFinished();
+    void onReleaseDirEditFinished(bool explicitSelection);
 
 private:
     friend class SyncTests;
@@ -127,6 +127,8 @@ private:
     void editSyncRule(bool editExisting);
     void removeSyncRule();
     void refreshRuleTable();
+    void refreshSyncTabBadges();
+    void openShareInExplorer(const QString &sharePath);
     void updateRulePreview();
     void syncRulesChanged();
     void startUpdateCheck(bool interactive);
@@ -156,6 +158,8 @@ private:
     void refreshHostTable();
     bool handleWorkerCopySucceeded(const QString &hostId, const QDateTime &completedUtc, quint64 revision);
     void addToReleaseDirHistory(const QString &path);
+    void removeReleaseDirHistory(const QString &path);
+    void refreshReleaseDirHistory(const QString &currentText);
     void updateHostRow(int row,
                        int state,
                        int mismatchPercent,

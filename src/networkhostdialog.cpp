@@ -11,18 +11,24 @@
 
 #include "networkhostdialog.h"
 #include "diagnostics.h"
+#include <QBrush>
+#include <QCheckBox>
+#include <QColor>
 #include <QDialogButtonBox>
 #include <QHeaderView>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QHostInfo>
 #include <QLabel>
+#include <QLineEdit>
 #include <QNetworkInterface>
 #include <QNetworkProxy>
 #include <QPushButton>
 #include <QRunnable>
 #include <QRegularExpression>
 #include <QScreen>
+#include <QSignalBlocker>
+#include <QTabBar>
 #include <QTableWidget>
 #include <QTcpSocket>
 #include <QTimer>
@@ -30,6 +36,7 @@
 #include <QVBoxLayout>
 #include <QtEndian>
 #include <QUuid>
+#include <algorithm>
 #include <cstring>
 #include <functional>
 #include <utility>
@@ -42,6 +49,24 @@
 #endif
 
 namespace {
+QString serverKey(const QString &server)
+{
+    QString value = server.trimmed().toCaseFolded();
+    if (value.endsWith('.')) value.chop(1);
+    const QHostAddress ip(value);
+    return ip.isNull() ? value : ip.toString().toCaseFolded();
+}
+
+QString uncServerForAddress(const QHostAddress &address)
+{
+    QString server = address.toString();
+    if (address.protocol() == QAbstractSocket::IPv6Protocol) {
+        server.replace(':', '-').replace('%', 's');
+        server += QStringLiteral(".ipv6-literal.net");
+    }
+    return server;
+}
+
 class ProbeTask : public QRunnable
 {
 public:
@@ -161,21 +186,42 @@ NetworkHostDialog::NetworkHostDialog(QWidget *parent, bool autoScan) : RoundedDi
     setWindowTitle(QStringLiteral("扫描局域网设备"));
     resize(830, 560);
     auto *layout = new QVBoxLayout(this);
-    auto *hint = new QLabel(QStringLiteral("扫描所有已启用网卡对应的局域网。单击选中设备，再点击“填入主机”；不会自动保存主机配置。\n"
-        "设备不响应探测时可能无法发现；IPv6 检查已发现的邻居设备。同一 IP 按网卡分别显示。大网段可随时取消。"), this);
+    auto *hint = new QLabel(QStringLiteral("双击主机名打开共享根目录。选中设备后点击“填入主机”，可带回主机配置。"), this);
     hint->setWordWrap(true);
     layout->addWidget(hint);
     m_interfaces = new QLabel(this);
     m_interfaces->setWordWrap(true);
     layout->addWidget(m_interfaces);
-    m_table = new QTableWidget(0, 4, this);
+    m_adapterTabs = new QTabBar(this);
+    m_adapterTabs->setObjectName("scanAdapterTabs");
+    m_adapterTabs->setExpanding(false);
+    m_adapterTabs->setUsesScrollButtons(true);
+    m_adapterTabs->setAccessibleName(QStringLiteral("按网卡查看扫描结果"));
+    layout->addWidget(m_adapterTabs);
+    m_search = new QLineEdit(this);
+    m_search->setObjectName("scanSearch");
+    m_search->setPlaceholderText(QStringLiteral("搜索主机名或 IP 地址"));
+    m_search->setAccessibleName(m_search->placeholderText());
+    m_search->setClearButtonEnabled(true);
+    layout->addWidget(m_search);
+    auto *filters = new QHBoxLayout;
+    m_hideUnnamed = new QCheckBox(QStringLiteral("隐藏未获取主机名的设备"), this);
+    m_onlySmb = new QCheckBox(QStringLiteral("仅显示文件共享端口可连接"), this);
+    m_onlyConfigured = new QCheckBox(QStringLiteral("仅显示已配置主机"), this);
+    for (auto *filter : {m_hideUnnamed, m_onlySmb, m_onlyConfigured}) {
+        filters->addWidget(filter);
+        connect(filter, &QCheckBox::toggled, this, &NetworkHostDialog::applyFilters);
+    }
+    filters->addStretch();
+    layout->addLayout(filters);
+    m_table = new QTableWidget(0, 5, this);
     m_table->setHorizontalHeaderLabels({QStringLiteral("主机名"), QStringLiteral("IP 地址"),
-        QStringLiteral("文件共享端口"), QStringLiteral("网卡")});
+        QStringLiteral("文件共享端口"), QStringLiteral("网卡"), QStringLiteral("配置")});
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_table->verticalHeader()->hide();
     layout->addWidget(m_table, 1);
     m_status = new QLabel(this);
@@ -188,14 +234,19 @@ NetworkHostDialog::NetworkHostDialog(QWidget *parent, bool autoScan) : RoundedDi
     buttons->addButton(QDialogButtonBox::Close)->setText(QStringLiteral("关闭"));
     layout->addWidget(buttons);
     m_selectButton->setEnabled(false);
-    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    m_cancelButton->setEnabled(false);
+    connect(buttons, &QDialogButtonBox::accepted, this, [this]() {
+        if (!selectedServer().isEmpty()) accept();
+    });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(m_scanButton, &QPushButton::clicked, this, &NetworkHostDialog::startScan);
     connect(m_cancelButton, &QPushButton::clicked, this, &NetworkHostDialog::cancelScan);
     connect(m_table, &QTableWidget::itemSelectionChanged, this, [this]() {
-        m_selectButton->setEnabled(m_table->currentRow() >= 0);
+        m_selectButton->setEnabled(!selectedServer().isEmpty());
     });
-    connect(m_table, &QTableWidget::cellDoubleClicked, this, [this](int, int) { accept(); });
+    connect(m_table, &QTableWidget::cellDoubleClicked, this, &NetworkHostDialog::browseShares);
+    connect(m_adapterTabs, &QTabBar::currentChanged, this, &NetworkHostDialog::applyFilters);
+    connect(m_search, &QLineEdit::textChanged, this, &NetworkHostDialog::applyFilters);
     m_pool.setMaxThreadCount(32);
     QScreen *screen = parent ? QGuiApplication::screenAt(parent->frameGeometry().center()) : QGuiApplication::primaryScreen();
     if (screen) resize(QSize(830, 560).boundedTo(screen->availableGeometry().size() - QSize(32, 48)));
@@ -215,8 +266,31 @@ NetworkHostDialog::~NetworkHostDialog()
 QString NetworkHostDialog::selectedServer() const
 {
     const int row = m_table->currentRow();
-    if (row < 0 || !m_table->item(row, 0)) return {};
-    return m_table->item(row, 0)->data(Qt::UserRole).toString();
+    if (row < 0 || m_table->isRowHidden(row)) return {};
+    const auto *item = m_table->item(row, 0);
+    return item && item->isSelected() ? item->data(Server).toString() : QString();
+}
+
+void NetworkHostDialog::setConfiguredServers(const QStringList &servers)
+{
+    m_configuredServers.clear();
+    for (const auto &server : servers) {
+        const auto key = serverKey(server);
+        if (!key.isEmpty()) m_configuredServers.insert(key);
+    }
+    for (int row = 0; row < m_table->rowCount(); ++row) updateConfiguredState(row);
+    applyFilters();
+}
+
+void NetworkHostDialog::browseShares(int row, int column)
+{
+    if (column != 0 || row < 0 || row >= m_table->rowCount() || m_table->isRowHidden(row)) return;
+    const auto *item = m_table->item(row, 0);
+    if (!item) return;
+    const QString server = item->data(Server).toString();
+    static const QRegularExpression validServer("^[A-Za-z0-9_.-]{1,253}$");
+    if (!validServer.match(server).hasMatch() || server.startsWith('.') || server.contains("..")) return;
+    emit browseSharesRequested(QStringLiteral("\\\\%1\\").arg(server));
 }
 
 void NetworkHostDialog::startScan()
@@ -236,14 +310,29 @@ void NetworkHostDialog::startScan()
     m_rows.clear();
     m_localAddresses.clear();
     m_table->setRowCount(0);
+    m_selectButton->setEnabled(false);
+    m_visibleCount = 0;
     m_total = m_completed = 0;
     m_rangeIndex = 0;
     QStringList labels;
+    QHash<int, QStringList> descriptions;
+    int preferredTab = -1;
+    int previousTab = -1;
+    const QVariant previousAdapter = m_adapterTabs->tabData(m_adapterTabs->currentIndex());
     QSet<QString> rangeKeys;
     const auto interfaces = QNetworkInterface::allInterfaces();
+    const QSignalBlocker blockTabs(m_adapterTabs);
+    while (m_adapterTabs->count()) m_adapterTabs->removeTab(0);
+    m_adapterTabs->addTab(QStringLiteral("全部"));
+    m_adapterTabs->setTabData(0, -1);
     for (const auto &iface : interfaces) {
         if (!(iface.flags() & QNetworkInterface::IsUp) || !(iface.flags() & QNetworkInterface::IsRunning)
             || (iface.flags() & QNetworkInterface::IsLoopBack)) continue;
+        const int tab = m_adapterTabs->addTab(iface.humanReadableName());
+        m_adapterTabs->setTabData(tab, iface.index());
+        if (previousAdapter.isValid() && previousAdapter.toInt() == iface.index()) previousTab = tab;
+        if (preferredTab < 0 && (iface.type() == QNetworkInterface::Ethernet || iface.type() == QNetworkInterface::Wifi))
+            preferredTab = tab;
         for (const auto &entry : iface.addressEntries()) {
             const QHostAddress ip = entry.ip();
             m_localAddresses.insert(ip.toString());
@@ -256,11 +345,11 @@ void NetworkHostDialog::startScan()
             const QString key = QString::number(iface.index()) + '/' + ip.toString();
             if (rangeKeys.contains(key)) continue;
             rangeKeys.insert(key);
-            const QString label = iface.humanReadableName() + " (" + ip.toString() + ')';
-            m_ranges.append({ip, first, last, label});
+            m_ranges.append({ip, first, last, iface.humanReadableName(), iface.index()});
             m_total += last - first + 1;
-            labels.append(QString("%1：%2/%3").arg(iface.humanReadableName(), QHostAddress(address & mask).toString())
-                .arg(entry.prefixLength()));
+            const QString subnet = QString("%1/%2").arg(QHostAddress(address & mask).toString()).arg(entry.prefixLength());
+            labels.append(QString("%1：%2").arg(iface.humanReadableName(), subnet));
+            descriptions[iface.index()].append(subnet);
         }
     }
 #ifdef Q_OS_WIN
@@ -278,14 +367,15 @@ void NetworkHostDialog::startScan()
                 QHostAddress ip(bytes);
                 if (ip.isMulticast() || ip.isNull() || ip.isLoopback()) continue;
                 if (ip.isLinkLocal()) ip.setScopeId(QString::number(iface.index()));
-                if (seen.contains(ip.toString())) continue;
+                const QString key = QString::number(iface.index()) + '/' + ip.toString();
+                if (seen.contains(key)) continue;
                 for (const auto &entry : iface.addressEntries()) {
                     if (entry.ip().protocol() != QAbstractSocket::IPv6Protocol
                         || entry.ip().isLinkLocal() != ip.isLinkLocal()) continue;
                     QHostAddress source = entry.ip();
                     if (source.isLinkLocal()) source.setScopeId(QString::number(iface.index()));
-                    m_neighbors.append({ip, source, iface.humanReadableName()});
-                    seen.insert(ip.toString());
+                    m_neighbors.append({ip, source, iface.humanReadableName(), iface.index()});
+                    seen.insert(key);
                     ++m_total;
                     break;
                 }
@@ -294,7 +384,14 @@ void NetworkHostDialog::startScan()
         FreeMibTable(neighbors);
     }
 #endif
-    m_interfaces->setText(labels.isEmpty() ? QStringLiteral("未找到可扫描的 IPv4 网段。") : labels.join(QStringLiteral("；")));
+    m_adapterTabs->setTabToolTip(0, labels.join('\n'));
+    for (int tab = 1; tab < m_adapterTabs->count(); ++tab)
+        m_adapterTabs->setTabToolTip(tab, descriptions.value(m_adapterTabs->tabData(tab).toInt()).join('\n'));
+    if (previousAdapter.isValid() && previousAdapter.toInt() == -1) previousTab = 0;
+    m_adapterTabs->setCurrentIndex(previousTab >= 0 ? previousTab : qMax(0, preferredTab));
+    m_interfaces->setText(m_adapterTabs->count() > 1
+        ? QStringLiteral("已启用网卡 %1 张，按页签查看结果。").arg(m_adapterTabs->count() - 1)
+        : QStringLiteral("未找到可扫描的网卡。"));
     Diagnostics::event("scan.start", {{"run", m_operationId}, {"action", Diagnostics::lastUserAction()},
         {"interfaces", QJsonArray::fromStringList(labels)}, {"addresses", double(m_total)}, {"ipv6_neighbors", m_neighbors.size()}});
     m_cancelled.store(false);
@@ -325,7 +422,7 @@ void NetworkHostDialog::pump()
             while (m_rangeIndex < m_ranges.size() && m_ranges[m_rangeIndex].next > m_ranges[m_rangeIndex].last) ++m_rangeIndex;
             if (m_rangeIndex >= m_ranges.size()) break;
             auto &range = m_ranges[m_rangeIndex];
-            candidate = {QHostAddress(quint32(range.next++)), range.source, range.label};
+            candidate = {QHostAddress(quint32(range.next++)), range.source, range.label, range.interfaceIndex};
         }
         ++m_inFlight;
         const quint64 generation = m_generation;
@@ -370,59 +467,79 @@ void NetworkHostDialog::recordHost(const Candidate &candidate, bool online, bool
     ++m_completed;
     if (online) {
         const QString ip = candidate.address.toString();
-        const QString key = ip + '|' + candidate.label;
+        const QString key = QString::number(candidate.interfaceIndex) + '|' + ip;
         if (!m_rows.contains(key)) {
             Diagnostics::event("scan.host_found", {{"run", m_operationId}, {"ip", ip}, {"source", candidate.source.toString()},
                 {"interface", candidate.label}, {"smb", smb}});
-            const int row = m_table->rowCount();
+            const int row = insertHost(candidate, smb);
             m_rows.insert(key, row);
-            m_table->insertRow(row);
-            for (int col = 0; col < 4; ++col) m_table->setItem(row, col, new QTableWidgetItem);
-            m_table->item(row, 0)->setText(QStringLiteral("正在解析…"));
-            QString server = ip;
-            if (candidate.address.protocol() == QAbstractSocket::IPv6Protocol) {
-                server.replace(':', '-');
-                server.replace('%', 's');
-                server += ".ipv6-literal.net";
-            }
-            m_table->item(row, 0)->setData(Qt::UserRole, server);
-            m_table->item(row, 1)->setText(ip);
-            m_table->item(row, 2)->setText(smb ? QStringLiteral("可连接") : QStringLiteral("未响应"));
-            m_table->item(row, 3)->setText(candidate.label + (m_localAddresses.contains(ip) ? QStringLiteral("（本机）") : QString()));
             resolveName(row, candidate, generation);
+            applyRowFilter(row);
         } else {
             const int row = m_rows.value(key);
-            auto *label = m_table->item(row, 3);
-            if (!label->text().contains(candidate.label)) label->setText(label->text() + "；" + candidate.label);
-            if (smb) m_table->item(row, 2)->setText(QStringLiteral("可连接"));
+            if (smb && !m_table->item(row, 0)->data(SmbAvailable).toBool()) {
+                m_table->item(row, 0)->setData(SmbAvailable, true);
+                m_table->item(row, 2)->setText(QStringLiteral("可连接"));
+                applyRowFilter(row);
+            }
         }
     }
     pump();
 }
 
+int NetworkHostDialog::insertHost(const Candidate &candidate, bool smb)
+{
+    const int row = m_table->rowCount();
+    const QString ip = candidate.address.toString();
+    m_table->insertRow(row);
+    ++m_visibleCount;
+    for (int column = 0; column < m_table->columnCount(); ++column)
+        m_table->setItem(row, column, new QTableWidgetItem);
+    auto *name = m_table->item(row, 0);
+    name->setText(QStringLiteral("正在解析…"));
+    name->setData(InterfaceIndex, candidate.interfaceIndex);
+    name->setData(SmbAvailable, smb);
+    name->setData(Server, uncServerForAddress(candidate.address));
+    m_table->item(row, 1)->setText(ip);
+    m_table->item(row, 2)->setText(smb ? QStringLiteral("可连接") : QStringLiteral("未响应"));
+    m_table->item(row, 3)->setText(candidate.label + (m_localAddresses.contains(ip) ? QStringLiteral("（本机）") : QString()));
+    updateConfiguredState(row);
+    return row;
+}
+
 void NetworkHostDialog::resolveName(int row, const Candidate &candidate, quint64 generation)
 {
+    auto *item = m_table->item(row, 0);
     const QString ip = candidate.address.toString();
     if (m_lookups.size() < 64) {
         // Qt 5.12 的函数式回调会在 DNS 工作线程直接执行，使用队列槽保证表格仅由界面线程更新。
         const int lookup = QHostInfo::lookupHost(ip, this, SLOT(resolveNameResult(QHostInfo)));
-        if (lookup >= 0) m_lookupRows.insert(lookup, row);
-        m_lookups.append(lookup);
-        QTimer::singleShot(5000, this, [this, lookup, row, generation]() {
-            if (generation != m_generation || !m_lookups.removeOne(lookup)) return;
-            m_lookupRows.remove(lookup);
-            QHostInfo::abortHostLookup(lookup);
-            if (row < m_table->rowCount() && m_table->item(row, 0)->text() == QStringLiteral("正在解析…"))
-                m_table->item(row, 0)->setText(QStringLiteral("未获取（使用 IP）"));
-        });
-    } else {
-        m_table->item(row, 0)->setText(QStringLiteral("未获取（使用 IP）"));
+        if (lookup >= 0) {
+            item->setData(DnsPending, true);
+            m_lookupRows.insert(lookup, row);
+            m_lookups.append(lookup);
+            QTimer::singleShot(5000, this, [this, lookup, row, generation]() {
+                if (generation != m_generation || !m_lookups.removeOne(lookup)) return;
+                m_lookupRows.remove(lookup);
+                QHostInfo::abortHostLookup(lookup);
+                finishNameLookup(row, DnsPending);
+            });
+        }
     }
-    if (candidate.address.protocol() != QAbstractSocket::IPv4Protocol || m_nameSockets.size() >= 128) return;
+    if (candidate.address.protocol() != QAbstractSocket::IPv4Protocol || m_nameSockets.size() >= 128) {
+        finishNameLookup(row, NetbiosPending);
+        return;
+    }
     auto *socket = new QUdpSocket(this);
     socket->setProxy(QNetworkProxy::NoProxy);
     m_nameSockets.append(socket);
-    if (!socket->bind(candidate.source, 0)) { m_nameSockets.removeOne(socket); socket->deleteLater(); return; }
+    if (!socket->bind(candidate.source, 0)) {
+        m_nameSockets.removeOne(socket);
+        socket->deleteLater();
+        finishNameLookup(row, NetbiosPending);
+        return;
+    }
+    item->setData(NetbiosPending, true);
     const quint16 id = quint16((row + 1) ^ (generation & 0xffff));
     connect(socket, &QUdpSocket::readyRead, this, [this, socket, row, candidate, generation, id]() {
         while (socket->hasPendingDatagrams()) {
@@ -435,14 +552,22 @@ void NetworkHostDialog::resolveName(int row, const Candidate &candidate, quint64
                 || sender != candidate.address || port != 137 || generation != m_generation) continue;
             const QString name = nodeName(data, id);
             if (!name.isEmpty() && row < m_table->rowCount()) {
-                m_table->item(row, 0)->setText(name);
-                m_table->item(row, 0)->setData(Qt::UserRole, name);
+                setResolvedName(row, name);
                 Diagnostics::event("scan.host_name", {{"run", m_operationId}, {"ip", candidate.address.toString()}, {"name", name}, {"method", "netbios"}});
             }
         }
     });
-    socket->writeDatagram(nodeStatusQuery(id), candidate.address, 137);
-    QTimer::singleShot(900, socket, [this, socket]() { m_nameSockets.removeOne(socket); socket->deleteLater(); });
+    if (socket->writeDatagram(nodeStatusQuery(id), candidate.address, 137) < 0) {
+        m_nameSockets.removeOne(socket);
+        socket->deleteLater();
+        finishNameLookup(row, NetbiosPending);
+        return;
+    }
+    QTimer::singleShot(900, socket, [this, socket, row, generation]() {
+        m_nameSockets.removeOne(socket);
+        socket->deleteLater();
+        if (generation == m_generation) finishNameLookup(row, NetbiosPending);
+    });
 }
 
 void NetworkHostDialog::resolveNameResult(const QHostInfo &info)
@@ -451,23 +576,100 @@ void NetworkHostDialog::resolveNameResult(const QHostInfo &info)
     const int row = m_lookupRows.take(info.lookupId());
     m_lookups.removeOne(info.lookupId());
     if (row < 0 || row >= m_table->rowCount()) return;
-    auto *item = m_table->item(row, 0);
     const QString name = info.hostName().trimmed();
     const QHostAddress numeric(name);
     static const QRegularExpression validName("^[A-Za-z0-9_.-]{1,253}$");
     if (info.error() == QHostInfo::NoError && numeric.isNull() && validName.match(name).hasMatch()) {
-        item->setText(name);
-        item->setData(Qt::UserRole, name);
+        setResolvedName(row, name);
         Diagnostics::event("scan.host_name", {{"run", m_operationId}, {"ip", m_table->item(row, 1)->text()}, {"name", name}, {"method", "dns"}});
-    } else if (item->text() == QStringLiteral("正在解析…")) {
-        item->setText(QStringLiteral("未获取（使用 IP）"));
     }
+    finishNameLookup(row, DnsPending);
+}
+
+void NetworkHostDialog::finishNameLookup(int row, int pendingRole)
+{
+    auto *item = m_table->item(row, 0);
+    if (!item) return;
+    item->setData(pendingRole, false);
+    if (item->data(KnownNames).toStringList().isEmpty() && !item->data(DnsPending).toBool() && !item->data(NetbiosPending).toBool()) {
+        item->setText(QStringLiteral("未获取（使用 IP）"));
+        applyRowFilter(row);
+        updateProgress();
+    }
+}
+
+void NetworkHostDialog::setResolvedName(int row, const QString &name)
+{
+    auto *item = m_table->item(row, 0);
+    QStringList names = item->data(KnownNames).toStringList();
+    if (!names.contains(name, Qt::CaseInsensitive)) names.append(name);
+    item->setData(KnownNames, names);
+    item->setData(Server, name);
+    item->setText(name);
+    updateConfiguredState(row);
+    applyRowFilter(row);
+    updateProgress();
+}
+
+void NetworkHostDialog::updateConfiguredState(int row)
+{
+    auto *item = m_table->item(row, 0);
+    const QString ip = m_table->item(row, 1)->text();
+    const QStringList names = item->data(KnownNames).toStringList();
+    const bool configured = m_configuredServers.contains(serverKey(ip))
+        || m_configuredServers.contains(serverKey(uncServerForAddress(QHostAddress(ip))))
+        || std::any_of(names.cbegin(), names.cend(), [this](const QString &name) {
+            return m_configuredServers.contains(serverKey(name));
+        });
+    if (item->data(Configured).isValid() && item->data(Configured).toBool() == configured) return;
+    item->setData(Configured, configured);
+    m_table->item(row, 4)->setText(configured ? QStringLiteral("已配置") : QString());
+    const QBrush background = configured ? QBrush(QColor("#e8f3ff")) : QBrush();
+    for (int column = 0; column < m_table->columnCount(); ++column)
+        m_table->item(row, column)->setBackground(background);
+}
+
+void NetworkHostDialog::applyRowFilter(int row)
+{
+    const auto *item = m_table->item(row, 0);
+    if (!item) return;
+    const QVariant adapter = m_adapterTabs->tabData(m_adapterTabs->currentIndex());
+    const QString query = m_search->text().trimmed();
+    const QStringList names = item->data(KnownNames).toStringList();
+    const bool pending = item->data(DnsPending).toBool() || item->data(NetbiosPending).toBool();
+    const bool configured = item->data(Configured).toBool();
+    const bool hidden = (adapter.isValid() && adapter.toInt() >= 0 && item->data(InterfaceIndex).toInt() != adapter.toInt())
+        || (m_hideUnnamed->isChecked() && names.isEmpty() && !pending && !configured)
+        || (m_onlySmb->isChecked() && !item->data(SmbAvailable).toBool())
+        || (m_onlyConfigured->isChecked() && !configured)
+        || (!query.isEmpty() && !m_table->item(row, 1)->text().contains(query, Qt::CaseInsensitive)
+            && std::none_of(names.cbegin(), names.cend(), [&](const QString &name) {
+                return name.contains(query, Qt::CaseInsensitive);
+            }));
+    if (hidden == m_table->isRowHidden(row)) return;
+    if (hidden && m_table->currentRow() == row) {
+        m_table->clearSelection();
+        m_table->setCurrentItem(nullptr);
+        m_selectButton->setEnabled(false);
+    }
+    m_table->setRowHidden(row, hidden);
+    m_visibleCount += hidden ? -1 : 1;
+}
+
+void NetworkHostDialog::applyFilters()
+{
+    for (int row = 0; row < m_table->rowCount(); ++row) applyRowFilter(row);
+    updateProgress();
 }
 
 void NetworkHostDialog::updateProgress()
 {
+    if (!m_elapsed.isValid()) {
+        m_status->setText(QStringLiteral("等待扫描"));
+        return;
+    }
     const QString state = m_cancelled.load() ? QStringLiteral("已取消")
         : m_scanning ? QStringLiteral("正在扫描") : QStringLiteral("扫描完成");
-    m_status->setText(QString("%1：已检查 %2 / %3 个地址，发现 %4 条设备记录。主机名解析可能稍后完成。")
-        .arg(state).arg(m_completed).arg(m_total).arg(m_table->rowCount()));
+    m_status->setText(QString("%1：已检查 %2 / %3 个地址，显示 %4 条，共发现 %5 条设备记录。")
+        .arg(state).arg(m_completed).arg(m_total).arg(m_visibleCount).arg(m_table->rowCount()));
 }

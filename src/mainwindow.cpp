@@ -53,11 +53,13 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -82,6 +84,7 @@
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTableWidget>
+#include <QTabBar>
 #include <QTableWidgetItem>
 #include <QThread>
 #include <QTextBrowser>
@@ -363,6 +366,41 @@ private:
 
 namespace
 {
+class SyncTabCountBadge final : public QLabel
+{
+public:
+    SyncTabCountBadge(const QString &text, QTabBar *bar, int tab)
+        : QLabel(text, bar), m_tab(tab)
+    {
+    }
+
+protected:
+    bool event(QEvent *event) override
+    {
+        const bool handled = QLabel::event(event);
+        const auto type = event->type();
+        if (!m_repositioning && (type == QEvent::Move || type == QEvent::Resize || type == QEvent::Show)) {
+            m_repositioning = true;
+            // 内置页签按钮占位正常参与布局，等 Qt 布局完成后再将泡泡对齐到角落。
+            QTimer::singleShot(0, this, [this]() {
+                auto *bar = static_cast<QTabBar *>(parentWidget());
+                if (bar->tabButton(m_tab, QTabBar::RightSide) == this) {
+                    const QRect tab = bar->tabRect(m_tab);
+                    constexpr int inset = 3;
+                    constexpr int tabGap = 3;
+                    move(tab.right() + 1 - width() - inset - tabGap, tab.top() + inset);
+                }
+                m_repositioning = false;
+            });
+        }
+        return handled;
+    }
+
+private:
+    const int m_tab;
+    bool m_repositioning = false;
+};
+
 struct SyncRoundFeedback
 {
     int running = 0;
@@ -390,6 +428,16 @@ struct SyncRoundFeedback
 QString normalizePathForUi(const QString &value)
 {
     return QDir::toNativeSeparators(QDir::cleanPath(QDir::fromNativeSeparators(value.trimmed())));
+}
+
+bool removeMatchingReleaseDirs(QStringList &history, const QString &normalized)
+{
+    const auto firstRemoved = std::remove_if(history.begin(), history.end(), [&](const QString &item) {
+        return normalizePathForUi(item).compare(normalized, Qt::CaseInsensitive) == 0;
+    });
+    if (firstRemoved == history.end()) return false;
+    history.erase(firstRemoved, history.end());
+    return true;
 }
 
 QString defaultHostNameFromPath(const QString &path)
@@ -524,7 +572,8 @@ MainWindow::MainWindow(QWidget *parent, const QString &configPath, bool manageSy
     m_copyPreview->watchDetails(m_hostTable);
     loadConfiguration();
     m_shortcuts = std::make_unique<ShortcutManager>(this);
-    m_shortcuts->add({"manualSync", QStringLiteral("手动同步"), [this]() { m_ui->syncButton->click(); }});
+    m_shortcuts->add({"manualSync", QStringLiteral("手动同步"), [this]() { m_ui->syncButton->click(); }, QStringLiteral("同步")});
+    m_shortcuts->add({"stopSync", QStringLiteral("停止所有同步"), [this]() { m_ui->stopButton->click(); }, QStringLiteral("同步")});
     applyShortcuts();
 
     m_updateCheckTimer = new QTimer(this);
@@ -646,6 +695,34 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
             || event->type() == QEvent::UngrabMouse || event->type() == QEvent::Hide
             || event->type() == QEvent::MouseButtonRelease)) {
         setPasswordVisible(false);
+    }
+    if (m_releaseDirEdit) {
+        auto *history = m_releaseDirEdit->view();
+        if (watched == history && event->type() == QEvent::KeyPress) {
+            const auto *key = static_cast<QKeyEvent *>(event);
+            const QModelIndex index = history->currentIndex();
+            if (key->key() == Qt::Key_Delete && key->modifiers() == Qt::NoModifier && index.isValid()) {
+                removeReleaseDirHistory(index.data().toString());
+                return true;
+            }
+        }
+        if (watched == history->viewport()
+            && (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease)) {
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::RightButton) {
+                // 拦截右键事件，以免误选条目并切换同步目录。
+                if (event->type() == QEvent::MouseButtonRelease) {
+                    const QModelIndex index = history->indexAt(mouse->pos());
+                    if (index.isValid()) {
+                        const QString path = index.data().toString();
+                        QMenu menu(this);
+                        QAction *remove = menu.addAction("移除这条历史记录");
+                        if (menu.exec(mouse->globalPos()) == remove) removeReleaseDirHistory(path);
+                    }
+                }
+                return true;
+            }
+        }
     }
     return RoundedMainWindow::eventFilter(watched, event);
 }
@@ -818,6 +895,10 @@ void MainWindow::setupUi()
     connect(m_ui->hostnameHelpButton, &QToolButton::clicked, this, &MainWindow::showHostnameHelp);
     m_hostTable = m_ui->hostTable;
     m_releaseDirEdit->lineEdit()->setPlaceholderText("选择或输入本地 Release 目录路径...");
+    m_releaseDirEdit->setToolTip("展开列表后，右键点击条目可移除历史记录，也可以选中条目后按 Delete。");
+    auto *releaseHistory = m_releaseDirEdit->view();
+    releaseHistory->installEventFilter(this);
+    releaseHistory->viewport()->installEventFilter(this);
     m_ui->stopButton->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
     for (int column : {0, 1, 3, 5}) {
         m_hostTable->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
@@ -894,7 +975,10 @@ void MainWindow::setupUi()
     });
     connect(m_ui->applyExclusionsButton, &QPushButton::clicked, this, &MainWindow::saveExclusions);
     connect(m_ui->exclusionsExampleButton, &QPushButton::clicked, this, &MainWindow::showExclusionsExample);
-    connect(m_ui->exclusionsEdit, &QPlainTextEdit::textChanged, m_ui->exclusionsError, &QLabel::hide);
+    connect(m_ui->exclusionsEdit, &QPlainTextEdit::textChanged, this, [this]() {
+        m_ui->exclusionsError->hide();
+        refreshSyncTabBadges();
+    });
     connect(m_typeList, &QListWidget::itemChanged, this, &MainWindow::handleTypeItemChanged);
     connect(m_ui->refreshButton, &QPushButton::clicked, this, [this]() {
         m_backgroundTasksPaused = false;
@@ -911,8 +995,9 @@ void MainWindow::setupUi()
     connect(m_hostTable, &QTableWidget::cellDoubleClicked, this, &MainWindow::handleHostTableCellDoubleClicked);
     connect(m_hostTable, &QTableWidget::customContextMenuRequested, this, &MainWindow::showHostTableContextMenu);
     connect(m_hostTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::loadSelectedHostToEditor);
-    connect(m_releaseDirEdit->lineEdit(), &QLineEdit::editingFinished, this, &MainWindow::onReleaseDirEditFinished);
-    connect(m_releaseDirEdit, QOverload<int>::of(&QComboBox::activated), this, &MainWindow::onReleaseDirEditFinished);
+    connect(m_releaseDirEdit->lineEdit(), &QLineEdit::editingFinished, this, [this]() { onReleaseDirEditFinished(false); });
+    connect(m_releaseDirEdit->lineEdit(), &QLineEdit::returnPressed, this, [this]() { onReleaseDirEditFinished(true); });
+    connect(m_releaseDirEdit, QOverload<int>::of(&QComboBox::activated), this, [this]() { onReleaseDirEditFinished(true); });
 }
 
 void MainWindow::showRemoteDebugger()
@@ -959,6 +1044,13 @@ void MainWindow::setPasswordVisible(bool visible)
 void MainWindow::scanNetworkHosts()
 {
     NetworkHostDialog dialog(this);
+    QStringList configuredServers;
+    for (const auto &host : m_config.hosts) {
+        const QString path = normalizePathForUi(host.sharePath);
+        if (path.startsWith("\\\\")) configuredServers.append(hostNameFromSharePath(path));
+    }
+    dialog.setConfiguredServers(configuredServers);
+    connect(&dialog, &NetworkHostDialog::browseSharesRequested, this, &MainWindow::openShareInExplorer);
     if (dialog.exec() != QDialog::Accepted) return;
     const QString server = dialog.selectedServer();
     if (server.isEmpty()) return;
@@ -1096,15 +1188,18 @@ void MainWindow::showExclusionsExample()
 void MainWindow::applyShortcuts()
 {
     const QString issues = m_shortcuts->apply(m_config.shortcuts);
-    QString hint = QStringLiteral("手动同步");
-    for (const auto &binding : m_config.shortcuts)
-        if (binding.action == "manualSync") hint += QStringLiteral("（%1）").arg(binding.keys);
+    const auto setHint = [&](QPushButton *button, const QString &action, QString hint) {
+        for (const auto &binding : m_config.shortcuts)
+            if (binding.action == action) hint += QStringLiteral("（%1）").arg(binding.keys);
+        if (!issues.isEmpty()) hint += '\n' + issues;
+        button->setToolTip(hint);
+    };
+    setHint(m_ui->syncButton, QStringLiteral("manualSync"), QStringLiteral("手动同步"));
+    setHint(m_ui->stopButton, QStringLiteral("stopSync"), QStringLiteral("停止所有同步并关闭自动同步"));
     if (!issues.isEmpty()) {
-        hint += '\n' + issues;
         statusBar()->showMessage(issues);
         Diagnostics::event("shortcut.unavailable", {{"reason", issues}}, true);
     }
-    m_ui->syncButton->setToolTip(hint);
 }
 
 void MainWindow::showPreferences()
@@ -1145,7 +1240,7 @@ void MainWindow::showPreferences()
     dialog.resize(dialog.width(), preferredHeight);
     connect(ui.buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(ui.buttonBox, &QDialogButtonBox::accepted, &dialog, [&]() {
-        if (!shortcuts->valid()) {
+        if (!shortcuts->validate()) {
             ui.preferencesTabs->setCurrentWidget(ui.shortcutsTab);
             ui.errorLabel->setText(QStringLiteral("请检查快捷键格式，或清除该绑定。"));
             ui.errorLabel->show();
@@ -1255,8 +1350,47 @@ void MainWindow::refreshRuleTable()
         m_ui->ruleTable->setItem(row, 2, types);
     }
     if (!m_config.syncRules.isEmpty()) m_ui->ruleTable->selectRow(qBound(0, selectedRow, m_config.syncRules.size() - 1));
-    m_ui->syncTabs->setTabText(m_ui->syncTabs->indexOf(m_ui->rulesTab), QString("附加同步规则（%1）").arg(m_config.syncRules.size()));
+    refreshSyncTabBadges();
     updateRulePreview();
+}
+
+void MainWindow::refreshSyncTabBadges()
+{
+    auto *tabBar = m_ui->syncTabs->tabBar();
+    const auto setBadge = [&](QWidget *page, int count) {
+        const int tab = m_ui->syncTabs->indexOf(page);
+        auto *previous = tabBar->tabButton(tab, QTabBar::RightSide);
+        const QString text = QString::number(count);
+        if (auto *label = qobject_cast<QLabel *>(previous); count > 0 && label && label->text() == text) return;
+        if (previous) {
+            tabBar->setTabButton(tab, QTabBar::RightSide, nullptr);
+            previous->deleteLater();
+        }
+        if (count <= 0) {
+            tabBar->setTabToolTip(tab, {});
+            return;
+        }
+        auto *badge = new SyncTabCountBadge(text, tabBar, tab);
+        badge->setObjectName("syncTabCountBadge");
+        badge->setAttribute(Qt::WA_TransparentForMouseEvents);
+        badge->setAlignment(Qt::AlignCenter);
+        badge->ensurePolished();
+        const QFontMetrics metrics = badge->fontMetrics();
+        badge->setFixedSize(qMax(18, metrics.horizontalAdvance(text) + 10), qMax(18, metrics.height() + 2));
+        tabBar->setTabButton(tab, QTabBar::RightSide, badge);
+        tabBar->setTabToolTip(tab, QStringLiteral("%1：%2 项").arg(tabBar->tabText(tab), text));
+    };
+    int selected = 0;
+    for (int row = 0; row < m_typeList->count(); ++row) {
+        if (m_typeList->item(row)->checkState() == Qt::Checked) ++selected;
+    }
+    QStringList exclusions;
+    QString error;
+    const auto entries = m_ui->exclusionsEdit->toPlainText().split(QRegularExpression("[;；\\n]"), QString::SkipEmptyParts);
+    if (!SyncPlan::normalizeExclusions(entries, &exclusions, &error)) exclusions = m_config.excludedFilePatterns;
+    setBadge(m_ui->basicTab, selected);
+    setBadge(m_ui->exclusionsTab, exclusions.size());
+    setBadge(m_ui->rulesTab, m_config.syncRules.size());
 }
 
 void MainWindow::updateRulePreview()
@@ -2160,11 +2294,12 @@ void MainWindow::stopUpdateChecks()
     abortInstallerDownload();
 }
 
-void MainWindow::onReleaseDirEditFinished()
+void MainWindow::onReleaseDirEditFinished(bool explicitSelection)
 {
     if (m_isClosing) return;
     const QString path = normalizePathForUi(m_releaseDirEdit->currentText());
-    if (path == m_config.releaseDir && (path.isEmpty() || path == m_config.releaseDirHistory.value(0))) {
+    if (path == normalizePathForUi(m_config.releaseDir)
+        && (!explicitSelection || path.isEmpty() || path == m_config.releaseDirHistory.value(0))) {
         return;
     }
     if (!path.isEmpty()) {
@@ -2182,7 +2317,7 @@ void MainWindow::addToReleaseDirHistory(const QString &path)
     }
 
     // 移除已存在的相同路径（稍后会添加到最前面）
-    m_config.releaseDirHistory.removeAll(normalized);
+    removeMatchingReleaseDirs(m_config.releaseDirHistory, normalized);
 
     // 插入到最前面
     m_config.releaseDirHistory.prepend(normalized);
@@ -2192,13 +2327,40 @@ void MainWindow::addToReleaseDirHistory(const QString &path)
         m_config.releaseDirHistory.removeLast();
     }
 
-    // 更新下拉框
+    refreshReleaseDirHistory(normalized);
+}
+
+void MainWindow::removeReleaseDirHistory(const QString &path)
+{
+    if (m_isClosing || path.trimmed().isEmpty()) return;
+    AppConfig updated = m_config;
+    if (!removeMatchingReleaseDirs(updated.releaseDirHistory, normalizePathForUi(path))) return;
+
+    const QString currentText = m_releaseDirEdit->currentText();
+    {
+        const QSignalBlocker editor(m_releaseDirEdit->lineEdit());
+        m_releaseDirEdit->hidePopup();
+    }
+    // 只保存历史变更，避免把尚未提交的输入当作新的同步目录。
+    QString error;
+    if (!ConfigManager::save(m_configPath, updated, &error)) {
+        Diagnostics::event("config.write_failed", {{"path", m_configPath}, {"error", error}}, true);
+        RoundedMessageBox::warning(this, "保存失败", QString("配置文件写入失败：%1").arg(error));
+        return;
+    }
+    m_config.releaseDirHistory = updated.releaseDirHistory;
+    refreshReleaseDirHistory(currentText);
+    statusBar()->showMessage("已移除 Release 目录历史记录", 3000);
+}
+
+void MainWindow::refreshReleaseDirHistory(const QString &currentText)
+{
     QSignalBlocker blocker(m_releaseDirEdit);
     m_releaseDirEdit->clear();
-    for (const QString &item : m_config.releaseDirHistory) {
-        m_releaseDirEdit->addItem(item);
-    }
-    m_releaseDirEdit->setCurrentText(normalized);
+    m_releaseDirEdit->addItems(m_config.releaseDirHistory);
+    const int currentIndex = m_releaseDirEdit->findText(currentText, Qt::MatchExactly);
+    m_releaseDirEdit->setCurrentIndex(currentIndex);
+    if (currentIndex < 0) m_releaseDirEdit->setEditText(currentText);
 }
 
 void MainWindow::loadConfiguration()
@@ -2221,17 +2383,7 @@ void MainWindow::loadConfiguration()
 void MainWindow::applyConfigToUi()
 {
     m_ui->exclusionsEdit->setPlainText(m_config.excludedFilePatterns.join('\n'));
-    // 先填充历史记录到下拉框
-    {
-        QSignalBlocker blocker(m_releaseDirEdit);
-        m_releaseDirEdit->clear();
-        for (const QString &item : m_config.releaseDirHistory) {
-            if (!item.trimmed().isEmpty()) {
-                m_releaseDirEdit->addItem(item);
-            }
-        }
-        m_releaseDirEdit->setCurrentText(normalizePathForUi(m_config.releaseDir));
-    }
+    refreshReleaseDirHistory(normalizePathForUi(m_config.releaseDir));
 
     updateSettingsSummary();
 
@@ -2524,6 +2676,7 @@ void MainWindow::loadSelectedHostToEditor()
 void MainWindow::saveConfiguration()
 {
     collectUiToConfig();
+    refreshSyncTabBadges();
 
     QString error;
     if (!ConfigManager::save(m_configPath, m_config, &error)) {
@@ -2582,7 +2735,10 @@ void MainWindow::stopAllOperations()
     updateSettingsSummary();
     requestWorkersToStop();
     saveConfiguration();
-    statusBar()->showMessage(hasRunningWorkers() ? "正在停止所有后台任务..." : "已停止，自动同步已关闭");
+    const QString status = hasRunningWorkers() ? QStringLiteral("正在停止所有后台任务...") : QStringLiteral("已停止，自动同步已关闭");
+    statusBar()->showMessage(status);
+    if (m_shortcuts && m_shortcuts->isDispatching() && m_config.showShortcutFeedback)
+        m_syncCompletionToast->present(status, {}, SyncCompletionToast::Information);
 }
 
 void MainWindow::addFileType()
@@ -2660,11 +2816,12 @@ void MainWindow::handleHostTableCellClicked(int row, int column)
         return;
     }
 
-    const QString sharePath = normalizePathForUi(m_config.hosts.at(row).sharePath);
-    if (sharePath.isEmpty()) {
-        return;
-    }
+    openShareInExplorer(normalizePathForUi(m_config.hosts.at(row).sharePath));
+}
 
+void MainWindow::openShareInExplorer(const QString &sharePath)
+{
+    if (m_isClosing || sharePath.isEmpty()) return;
     if (m_isOpeningShare
         || (m_lastShareOpenPath.compare(sharePath, Qt::CaseInsensitive) == 0
             && m_shareOpenClickTimer.isValid()
