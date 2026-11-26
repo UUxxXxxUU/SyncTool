@@ -33,6 +33,7 @@
 #include <QMenu>
 #include <QModelIndex>
 #include <QSettings>
+#include <QSysInfo>
 #include <QSystemTrayIcon>
 #include <QStyle>
 #include <QCryptographicHash>
@@ -853,7 +854,12 @@ void MainWindow::finishExit()
 void MainWindow::setupUi()
 {
     m_ui->setupUi(this);
-    setWindowTitle(QString("远程 Release 同步工具 v%1").arg(QCoreApplication::applicationVersion()));
+    QString title = QString("远程 Release 同步工具 v%1").arg(QCoreApplication::applicationVersion());
+    const QString hostName = QSysInfo::machineHostName();
+    if (!hostName.isEmpty()) {
+        title += QStringLiteral(" · 本机：%1").arg(hostName);
+    }
+    setWindowTitle(title);
     setFocusProxy(m_ui->syncTabs);
     if (QScreen *screen = QGuiApplication::primaryScreen()) {
         resize(QSize(1280, 860).boundedTo(screen->availableGeometry().size() - QSize(40, 60)));
