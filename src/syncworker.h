@@ -62,7 +62,6 @@ public slots:
 
 signals:
     void copySucceeded(const QString &hostId, const QDateTime &completedUtc);
-    void symbolsVerified(const QString &hostId, const QStringList &pendingPdbs, bool verified);
     void progressChanged(const QString &hostId, int percent, const QString &detail);
     void recentFilesChanged(const QString &hostId, const QStringList &files, const QString &title);
     void stateChanged(const QString &hostId,

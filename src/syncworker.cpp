@@ -867,7 +867,6 @@ void SyncWorker::process()
     }
 
     if (pendingCopies.isEmpty()) {
-        emit symbolsVerified(m_host.id, {}, true);
         const bool hasBlockingDifference = hasSyncBlockingDifference(summary);
         emitProgress(100, "无需复制");
         emitState(hasBlockingDifference ? Mismatch : InSync,
@@ -899,33 +898,14 @@ void SyncWorker::process()
     QString copyError;
     const bool copyOk = runRobocopy(this, localRoot, pendingCopies, threadCount, m_operationId, &copyError);
     if (finishIfCancelled()) return;
-    const auto isPdb = [](const PendingCopy &copy) { return copy.relativePath.endsWith(".pdb", Qt::CaseInsensitive); };
-    if (!copyOk && std::none_of(pendingCopies.cbegin(), pendingCopies.cend(), isPdb)) {
-        finishWithError(Error, "同步失败", copyError);
-        return;
-    }
-
-    // A failed robocopy batch can still have copied some binaries. Verify the symbols in either case.
-    const auto finalRemoteFiles = SyncPlan::collect(remoteRoot, scopes, false, m_cancelled.get(), &planError);
-    if (finishIfCancelled()) return;
-    QStringList pendingPdbs;
-    for (const PendingCopy &copy : pendingCopies) {
-        if (!isPdb(copy)) continue;
-        const QString key = copy.relativePath.toCaseFolded();
-        const auto remote = finalRemoteFiles.constFind(key);
-        if (!planError.isEmpty() || remote == finalRemoteFiles.constEnd() || !sameFile(localFiles.value(key), remote.value())) {
-            pendingPdbs.append(copy.relativePath);
-        }
-    }
-    pendingPdbs.sort(Qt::CaseInsensitive);
-    if (!pendingPdbs.isEmpty()) {
-        recordDiagnostic("sync.pdb_missing", {{"run", m_operationId}, {"count", pendingPdbs.size()}, {"verified", planError.isEmpty()}}, true);
-    }
-    emit symbolsVerified(m_host.id, pendingPdbs, planError.isEmpty());
     if (!copyOk) {
         finishWithError(Error, "同步失败", copyError);
         return;
     }
+
+    // Re-read the destination instead of assuming that a successful process copied every file.
+    const auto finalRemoteFiles = SyncPlan::collect(remoteRoot, scopes, false, m_cancelled.get(), &planError);
+    if (finishIfCancelled()) return;
     if (!planError.isEmpty()) { finishWithError(Error, "同步后校验失败", planError); return; }
     ComparisonSummary finalSummary = compareFiles(localFiles, finalRemoteFiles, nullptr, remoteRoot);
     m_comparisonSignature = finalSummary.diagnosticSignature;

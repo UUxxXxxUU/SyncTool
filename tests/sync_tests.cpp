@@ -218,7 +218,7 @@ private slots:
             QApplication::setFont(QFont("Microsoft YaHei", 10));
         }
         QApplication::setWindowIcon(QIcon(":/icons/app_32.png"));
-        QApplication::setApplicationVersion("1.1.9");
+        QApplication::setApplicationVersion("1.1.10");
         QSettings settings(startupKey, QSettings::NativeFormat);
         m_hadStartup = settings.contains("RemoteReleaseSync");
         m_originalStartup = settings.value("RemoteReleaseSync").toString();
@@ -1685,7 +1685,7 @@ private slots:
         dialog->reject();
     }
 
-    void incompletePdbWarningOnRealShare()
+    void lockedPdbReportsSyncFailureAndCanRetry()
     {
 #ifdef Q_OS_WIN
         QVERIFY(writeFile(source() + "/module.dll", "new DLL"));
@@ -1712,17 +1712,10 @@ private slots:
 
         auto *sync = main.findChild<QPushButton *>("syncButton");
         sync->click();
-        QTRY_COMPARE_WITH_TIMEOUT(main.findChildren<QMessageBox *>().size(), 1, 15000);
-        auto *warning = main.findChild<QMessageBox *>();
-        QCOMPARE(warning->windowTitle(), QString("PDB 同步提醒"));
-        QCOMPARE(warning->detailedText(), QString("module.pdb"));
-        QCOMPARE(readFile(target() + "/module.dll"), QByteArray("new DLL"));
         QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(main), 15000);
-        warning->close();
-        QTRY_VERIFY(main.findChildren<QMessageBox *>().isEmpty());
-        sync->click();
-        QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(main), 15000);
+        QCOMPARE(main.findChild<QTableWidget *>("hostTable")->item(0, 5)->text(), QStringLiteral("同步失败"));
         QVERIFY(main.findChildren<QMessageBox *>().isEmpty());
+        QCOMPARE(readFile(target() + "/module.dll"), QByteArray("new DLL"));
 
         CloseHandle(lock);
         guard.handle = INVALID_HANDLE_VALUE;
@@ -1730,6 +1723,7 @@ private slots:
         sync->click();
         QTRY_COMPARE_WITH_TIMEOUT(readFile(target() + "/module.pdb"), QByteArray("new symbols"), 15000);
         QTRY_VERIFY_WITH_TIMEOUT(workersAreIdle(main), 15000);
+        QCOMPARE(main.findChild<QTableWidget *>("hostTable")->item(0, 5)->text(), QStringLiteral("已同步"));
         QVERIFY(main.findChildren<QMessageBox *>().isEmpty());
 #endif
     }

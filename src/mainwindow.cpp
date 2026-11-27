@@ -1154,7 +1154,6 @@ void MainWindow::saveExclusions()
         for (HostEntry &host : next.hosts) host.lastSyncUtc = QDateTime();
         if (ConfigManager::save(m_configPath, next, &error)) {
             m_config = std::move(next);
-            m_symbolWarnings.clear();
             for (const HostEntry &host : m_config.hosts) ++m_syncContextRevisions[host.id];
             refreshLastSyncTimes();
             m_ui->exclusionsEdit->setPlainText(patterns.join('\n'));
@@ -1440,7 +1439,6 @@ void MainWindow::syncRulesChanged()
         host.lastSyncUtc = QDateTime();
         ++m_syncContextRevisions[host.id];
     }
-    m_symbolWarnings.clear();
     refreshLastSyncTimes();
     refreshRuleTable();
     saveConfiguration();
@@ -2448,7 +2446,6 @@ void MainWindow::collectUiToConfig()
             host.lastSyncUtc = QDateTime();
             ++m_syncContextRevisions[host.id];
         }
-        m_symbolWarnings.clear();
         refreshLastSyncTimes();
     }
 }
@@ -2963,28 +2960,6 @@ void MainWindow::handleWorkerState(const QString &hostId,
     }
 }
 
-void MainWindow::handleSymbolsVerified(const QString &hostId, const QStringList &files, bool verified, quint64 revision)
-{
-    if (m_isClosing || m_stoppingHostIds.contains(hostId) || m_syncContextRevisions.value(hostId) != revision) return;
-    if (files.isEmpty()) {
-        if (verified) m_symbolWarnings.remove(hostId);
-        return;
-    }
-    const auto host = std::find_if(m_config.hosts.cbegin(), m_config.hosts.cend(),
-                                   [&](const HostEntry &entry) { return entry.id == hostId; });
-    if (host == m_config.hosts.cend() || !host->enabled) return;
-
-    QStringList warningKey = files;
-    warningKey.prepend(verified ? "pending" : "unverified");
-    if (m_symbolWarnings.value(hostId) == warningKey) return;
-    m_symbolWarnings.insert(hostId, warningKey);
-    const QString name = host->name.isEmpty() ? host->sharePath : host->name;
-    const QString message = verified
-        ? QString("主机 %1 有 %2 个计划同步的 PDB 仍缺失或与本地不一致。符号文件被占用或目标共享不可写时，请解除占用或恢复共享后重试。").arg(name).arg(files.size())
-        : QString("主机 %1 的远端校验失败，无法确认 %2 个计划同步的 PDB 已更新。请检查共享后重试。").arg(name).arg(files.size());
-    showNotice("PDB 同步提醒", message, true, files.join('\n'));
-}
-
 bool MainWindow::handleWorkerCopySucceeded(const QString &hostId, const QDateTime &completedUtc, quint64 revision)
 {
     if (m_isClosing || !completedUtc.isValid() || m_stoppingHostIds.contains(hostId)) {
@@ -3264,9 +3239,6 @@ void MainWindow::startOperations(bool performCopy, bool backgroundPoll, bool fro
             if (terminal && display->pendingPercent >= 0) handleWorkerProgress(hostId, display->pendingPercent, display->pendingDetail);
             handleWorkerState(hostId, state, mismatch, status, detail, tooltip);
             if (terminal) m_checkDisplays.insert(hostId, {revision, signature});
-        });
-        connect(worker, &SyncWorker::symbolsVerified, this, [this, revision](const QString &hostId, const QStringList &files, bool verified) {
-            handleSymbolsVerified(hostId, files, verified, revision);
         });
         connect(worker, &SyncWorker::copySucceeded, this, [this, revision, display](const QString &hostId, const QDateTime &completedUtc) {
             display->copied = handleWorkerCopySucceeded(hostId, completedUtc, revision);

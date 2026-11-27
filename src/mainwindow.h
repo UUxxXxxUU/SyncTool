@@ -123,7 +123,6 @@ private:
     void updateUptime();
     void saveExclusions();
     void showExclusionsExample();
-    void handleSymbolsVerified(const QString &hostId, const QStringList &files, bool verified, quint64 revision);
     void editSyncRule(bool editExisting);
     void removeSyncRule();
     void refreshRuleTable();
@@ -257,7 +256,6 @@ private:
     QHash<QString, std::shared_ptr<std::atomic<bool>>> m_cancellationFlags;
     QSet<QString> m_stoppingHostIds;
     QHash<QString, quint64> m_syncContextRevisions;
-    QHash<QString, QStringList> m_symbolWarnings;
 
     QSystemTrayIcon *m_trayIcon = nullptr;
     QMenu *m_trayMenu = nullptr;

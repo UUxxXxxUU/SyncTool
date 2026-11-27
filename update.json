@@ -1,15 +1,14 @@
 {
-  "version": "1.1.9",
-  "notes": "新增反馈中心，支持提交问题或需求、附加截图和在原会话中跟进。",
+  "version": "1.1.10",
+  "notes": "移除 PDB 专用同步提醒；同步失败状态和整体一致性校验保持有效。",
   "downloadUrl": "https://github.com/UUxxXxxUU/SyncTool/releases",
-  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.1.9",
-  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.1.9/RemoteReleaseSync-1.1.9-windows-x64-setup.exe",
+  "releaseUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/tag/v1.1.10",
+  "installerUrl": "https://github.com/UUxxXxxUU/SyncTool/releases/download/v1.1.10/RemoteReleaseSync-1.1.10-windows-x64-setup.exe",
   "sections": [
     {
-      "title": "反馈中心",
+      "title": "修复问题",
       "items": [
-        "通过「帮助 → 反馈问题 / 提需求」打开反馈中心，连接维护者提供的服务后可提交文字和图片。",
-        "发送失败时保留本机草稿，重试后可在「我的反馈」查看回复、处理进度和新版验证结果。"
+        "移除编译期间容易反复出现的 PDB 专用同步提醒，保留普通同步失败状态和复制后的整体一致性校验。"
       ]
     }
   ]
